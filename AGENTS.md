@@ -1,4 +1,4 @@
-# The Flow XR — Claude Code context
+# The Flow XR — Codex context
 
 A WebXR experience where the player witnesses a world being born, structured on
 the Dao De Jing (道生一，一生二，二生三，三生万物). The player never *creates*

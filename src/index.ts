@@ -91,7 +91,8 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
 })
   .then((world) => {
     world.camera.position.set(0, 1.5, 0);
-    world.scene.background = new THREE.Color(0x000000);
+    // 一 Breath is a pure white void — no ground, no sky, no horizon.
+    world.scene.background = new THREE.Color(0xffffff);
     world.scene.add(new THREE.AmbientLight(0xffffff, 1.0));
 
     world
@@ -138,6 +139,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       scene1.addComponent(GaussianSplatLoader, {
         splatUrl: splatUrl("Scene1/Celestial Pathways Amidst Clouds.compressed.ply"),
         animate: false,
+        flipUp: true, // this .ply exports Y-down
       });
 
       const reveal = world.getSystem(SplatRevealSystem)!;
@@ -172,10 +174,6 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       .createTransformEntity(floor)
       .addComponent(LocomotionEnvironment, { type: EnvironmentType.STATIC });
 
-    const grid = new THREE.GridHelper(100, 100, 0x444444, 0x222222);
-    grid.material.transparent = true;
-    grid.material.opacity = 0.4;
-    world.scene.add(grid);
 
 
     // ------------------------------------------------------------
@@ -210,12 +208,15 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     // The panel above carried the only Enter XR control, so removing it would
     // otherwise leave no way into the session. Delete this block when the
     // panel comes back.
+    // Styled to disappear into the white void rather than sit on top of it —
+    // Scene 0 has no UI. It's still the only way in, so it can't be removed,
+    // only made quiet: a faint grey word in the corner.
     const xrButton = document.createElement("button");
-    xrButton.textContent = "Enter XR";
+    xrButton.textContent = "enter";
     xrButton.style.cssText =
-      "position:fixed;top:16px;left:16px;z-index:9999;padding:12px 20px;" +
-      "font:600 16px system-ui,sans-serif;color:#fff;background:#0088cc;" +
-      "border:none;border-radius:8px;cursor:pointer";
+      "position:fixed;bottom:20px;right:20px;z-index:9999;padding:8px 14px;" +
+      "font:400 13px system-ui,sans-serif;letter-spacing:.08em;color:#bbb;" +
+      "background:transparent;border:none;cursor:pointer";
     xrButton.addEventListener("click", () => {
       Promise.resolve(world.launchXR()).catch((err) => {
         console.error("[World] launchXR() failed:", err);

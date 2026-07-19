@@ -63,6 +63,11 @@ export const GaussianSplatLoader = createComponent("GaussianSplatLoader", {
   animate: { type: Types.Boolean, default: false },
   enableLod: { type: Types.Boolean, default: true },
   lodSplatScale: { type: Types.Float32, default: 1.0 },
+  // Some capture/training pipelines export splats Y-down relative to three.js's
+  // Y-up world, so the scene arrives upside down. Set this to flip it back.
+  // Applied to the SplatMesh itself, not the entity, so reveal/morph systems
+  // stay free to drive the entity transform.
+  flipUp: { type: Types.Boolean, default: false },
 });
 
 
@@ -211,10 +216,31 @@ export class GaussianSplatLoaderSystem extends createSystem({
       this.sparkRenderer.lodSplatScale = lodSplatScale;
     }
 
+    // Pass the flag through as-is. `enableLod || undefined` was wrong: it turns
+    // `false` into `undefined`, which omits the option and lets Spark apply its
+    // own default — so LOD could never actually be switched off.
     const splat = new SplatMesh({
       url: splatUrl,
-      lod: enableLod || undefined,
+      lod: enableLod,
     });
+
+    // SparkJS bounding boxes under-report the true splat extent (the same
+    // reason SplatReveal's MAX_RADIUS is hardcoded rather than measured). An
+    // under-reported bound means three.js frustum-culls geometry that is
+    // actually on screen, punching world-fixed holes in the scene. Splats are
+    // one draw call, so skipping the cull test costs essentially nothing.
+    splat.frustumCulled = false;
+
+    console.log(
+      `[GaussianSplatLoader] lod=${enableLod} frustumCulled=${splat.frustumCulled}`,
+    );
+
+    if (entity.getValue(GaussianSplatLoader, "flipUp") as boolean) {
+      // Z, not X. A π rotation about X flips Y *and* Z — it fixes upside-down
+      // but yaws the scene 180°, leaving you behind it. About Z it flips Y and
+      // X, so the scene stands up while keeping the direction it faces.
+      splat.rotation.z = Math.PI;
+    }
     const timeout = new Promise<never>((_, reject) => {
       setTimeout(
         () =>

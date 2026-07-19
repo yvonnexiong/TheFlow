@@ -112,6 +112,32 @@ export class HandFollowCubeSystem extends createSystem({}) {
     // before the user has touched anything, which just looks like fog.
     this.cube.position.set(-TRACK_HALF_WIDTH, TRACK_Y, TRACK_Z);
     this.root.add(this.cube);
+
+    this.drawOverSplats(this.root);
+  }
+
+  /**
+   * Draw the rail and cube on top of the splat world.
+   *
+   * The rail is a control, not scenery — it has to stay readable wherever the
+   * player has revealed the world to. Splats sit at renderOrder -10 and the
+   * revealed world routinely occupies the space between the eye and TRACK_Z,
+   * so by ordinary depth testing the cube is simply *inside* the world and gets
+   * covered. Same trick uiPanel.ts uses for panels: AlwaysDepth passes the
+   * depth test unconditionally, and a high renderOrder draws it last.
+   * depthWrite stays true so the cube still occludes itself correctly.
+   */
+  private drawOverSplats(root: THREE.Object3D) {
+    root.traverse((obj) => {
+      obj.renderOrder = 10_000;
+      const mat = (obj as THREE.Mesh).material;
+      if (!mat) return;
+      for (const m of Array.isArray(mat) ? mat : [mat]) {
+        m.depthTest = true;
+        m.depthWrite = true;
+        m.depthFunc = THREE.AlwaysDepth;
+      }
+    });
   }
 
   /** Show/hide the whole rail + cube. The Director hides it during 一 breath
