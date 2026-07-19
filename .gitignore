@@ -162,3 +162,7 @@ vite.config.ts.timestamp-*
 *.VC.db
 sysinfo.txt
 .DS_Store
+
+# Local source splats and captures (large; may contain private EXIF/GPS metadata).
+# The optimized, runtime-ready reward asset lives under WayfinderUnity/Assets.
+/splats/

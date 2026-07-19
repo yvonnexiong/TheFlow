@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "org.nesnausk.gaussian-splatting": "file:org.nesnausk.gaussian-splatting",
     "com.unity.xr.openxr": "1.16.1",
     "com.unity.xr.openxr.picoxr": "https://github.com/Pico-Developer/PICO-Unity-OpenXR-SDK.git#release_1.4.0",
     "com.unity.xr.hands": "1.4.0",

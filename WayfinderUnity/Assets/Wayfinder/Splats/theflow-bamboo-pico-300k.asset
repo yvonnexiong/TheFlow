@@ -1,0 +1,31 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 33b71fae31e6c7d438e8566dc713e666, type: 3}
+  m_Name: theflow-bamboo-pico-300k
+  m_EditorClassIdentifier: GaussianSplatting::GaussianSplatting.Runtime.GaussianSplatAsset
+  m_FormatVersion: 20231020
+  m_SplatCount: 300000
+  m_BoundsMin: {x: -49.770115, y: -21.636063, z: -63.21243}
+  m_BoundsMax: {x: 31.002728, y: 26.14915, z: 51.45596}
+  m_DataHash:
+    serializedVersion: 2
+    Hash: 8fb4dd0477d8fb278b5d0beb2fd5c54a
+  m_PosFormat: 2
+  m_ScaleFormat: 2
+  m_SHFormat: 3
+  m_ColorFormat: 2
+  m_PosData: {fileID: 4900000, guid: c8ce6a6e4a0da4298be7d0e6cb952858, type: 3}
+  m_ColorData: {fileID: 4900000, guid: 2665b0544f0d9496ab1c8ba0294cf29a, type: 3}
+  m_OtherData: {fileID: 4900000, guid: 4113251f2bb0c492f91b9678ff685cac, type: 3}
+  m_SHData: {fileID: 4900000, guid: 18e34f0d9300841d4b4ad239037a0434, type: 3}
+  m_ChunkData: {fileID: 4900000, guid: 4f98cf5c5970b4af69c30fd4c334d690, type: 3}
+  m_Cameras: []

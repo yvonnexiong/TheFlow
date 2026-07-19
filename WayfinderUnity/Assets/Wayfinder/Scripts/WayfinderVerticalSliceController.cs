@@ -11,6 +11,7 @@ public sealed class WayfinderVerticalSliceController : MonoBehaviour
     [Header("Named future integration slots")]
     [SerializeField] private WayfinderWorldRevealSlot worldLabsWorldSlot;
     [SerializeField] private WayfinderRewardMaterializationSlot tripoRewardSlot;
+    [SerializeField] private WayfinderScriptedReflectionController scriptedReflection;
 
     [Header("Headset-legible feedback")]
     [SerializeField] private TextMesh userFeedbackText;
@@ -89,9 +90,14 @@ public sealed class WayfinderVerticalSliceController : MonoBehaviour
             return;
         }
         circleResult = UpdateCircle(metrics, Time.unscaledDeltaTime);
+        if (worldLabsWorldSlot != null && riverController.SuccessfulPushes >= 2)
+            worldLabsWorldSlot.Prepare();
         bool finalOrbit = riverController.SuccessfulPushes >= riverController.RequiredPushes - 1;
         WayfinderMemoryDecision decision = session.Tick(
             metrics, circleResult.ValidFlow && finalOrbit, Time.unscaledDeltaTime);
+        if (scriptedReflection != null &&
+            scriptedReflection.TryConsumeCompletion(out WayfinderReflectionChoice reflectionChoice))
+            session.ChooseReflection(reflectionChoice);
         UpdateFeedback(metrics, decision);
         UpdateDwellTargets();
         if (Input.GetKeyDown(KeyCode.J)) ToggleJudgeHud();
@@ -118,6 +124,7 @@ public sealed class WayfinderVerticalSliceController : MonoBehaviour
         if (completionText != null) completionText.gameObject.SetActive(false);
         if (stoneStoryRoot != null) stoneStoryRoot.SetActive(false);
         if (peaceStateRoot != null) peaceStateRoot.SetActive(false);
+        if (scriptedReflection != null) scriptedReflection.ResetReflection();
         UpdateProgressRing(0f);
     }
 
@@ -164,7 +171,8 @@ public sealed class WayfinderVerticalSliceController : MonoBehaviour
             stoneStoryText.text = StoneStory(lastStoryStone);
 
         bool crossingComplete = riverController.State == WayfinderRiverController.RiverState.Completion;
-        bool showPeace = crossingComplete && !showStory;
+        bool showPeace = crossingComplete && !showStory &&
+                         (scriptedReflection == null || !scriptedReflection.IsVisible);
         if (peaceStateRoot != null) peaceStateRoot.SetActive(showPeace);
         if (peaceStateText != null && showPeace)
         {
@@ -206,7 +214,8 @@ public sealed class WayfinderVerticalSliceController : MonoBehaviour
         }
         if (completionText != null)
         {
-            bool saved = decision.State == WayfinderMemoryKeeperState.MemorySaved;
+            bool saved = decision.State == WayfinderMemoryKeeperState.MemorySaved &&
+                         scriptedReflection == null;
             completionText.gameObject.SetActive(saved);
             if (saved) completionText.text = "MEMORY SAVED\nYOUR REWARD IS READY";
         }
@@ -215,7 +224,11 @@ public sealed class WayfinderVerticalSliceController : MonoBehaviour
     private void UpdateDwellTargets()
     {
         if (dwellTargets == null || dwellTracker == null) return;
-        bool reflecting = session.State == WayfinderMemoryKeeperState.Reflecting;
+        bool scriptedEndingOwnsInput = scriptedReflection != null &&
+                                        worldLabsWorldSlot != null &&
+                                        worldLabsWorldSlot.IsOpen;
+        bool reflecting = session.State == WayfinderMemoryKeeperState.Reflecting &&
+                          !scriptedEndingOwnsInput;
         activeTargets.Clear();
         activePositions.Clear();
         foreach (WayfinderPalmDwellTarget target in dwellTargets)
@@ -223,7 +236,8 @@ public sealed class WayfinderVerticalSliceController : MonoBehaviour
             if (target == null) continue;
             bool completed = circleResult.Stage == WayfinderCircularTutorialStage.Relax ||
                              session.State == WayfinderMemoryKeeperState.MemorySaved;
-            bool available = IsTargetAvailable(target.Kind, reflecting, optionsOpen, completed);
+            bool available = !scriptedEndingOwnsInput &&
+                             IsTargetAvailable(target.Kind, reflecting, optionsOpen, completed);
             target.SetProgress(0f, available);
             if (available)
             {

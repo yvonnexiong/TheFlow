@@ -5,6 +5,7 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
+using GaussianSplatting.Runtime;
 
 public static class WayfinderSceneBuilder
 {
@@ -628,6 +629,8 @@ public static class WayfinderSceneBuilder
         WayfinderWorldRevealSlot worldSlot = CreateWorldLabsPlaceholderSlots(memoryGlow, goldGlow);
         WayfinderRewardMaterializationSlot rewardSlot = CreateTripoPlaceholderSlot(goldGlow);
         WayfinderPalmDwellTarget[] targets = CreateDwellTargets(jadeGlow, goldGlow);
+        WayfinderScriptedReflectionController scriptedReflection = CreateScriptedReflection(
+            worldSlot, handVisualizer, panelMaterial, jadeGlow, goldGlow);
 
         GameObject controllerObject = new GameObject("Wayfinder Memory Vertical Slice");
         WayfinderVerticalSliceController controller = controllerObject.AddComponent<WayfinderVerticalSliceController>();
@@ -636,6 +639,7 @@ public static class WayfinderSceneBuilder
         serialized.FindProperty("palmPoseSource").objectReferenceValue = handVisualizer;
         serialized.FindProperty("worldLabsWorldSlot").objectReferenceValue = worldSlot;
         serialized.FindProperty("tripoRewardSlot").objectReferenceValue = rewardSlot;
+        serialized.FindProperty("scriptedReflection").objectReferenceValue = scriptedReflection;
         serialized.FindProperty("userFeedbackText").objectReferenceValue = userFeedback;
         serialized.FindProperty("judgeHudText").objectReferenceValue = judgeHud;
         serialized.FindProperty("judgeHudRoot").objectReferenceValue = judgeRoot;
@@ -895,21 +899,38 @@ public static class WayfinderSceneBuilder
     private static WayfinderWorldRevealSlot CreateWorldLabsPlaceholderSlots(Material memoryMaterial, Material goldMaterial)
     {
         GameObject holder = new GameObject("WorldLabs Original-to-Memory Reveal Slot");
-        holder.transform.position = new Vector3(0f, 1.55f, 3.05f);
+        holder.transform.position = Vector3.zero;
 
         GameObject original = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         original.name = "WorldLabs_Original_World_Slot_PLACEHOLDER";
         original.transform.SetParent(holder.transform, false);
+        original.transform.localPosition = new Vector3(0f, 1.55f, 3.05f);
         original.GetComponent<Renderer>().sharedMaterial = memoryMaterial;
         UnityEngine.Object.DestroyImmediate(original.GetComponent<Collider>());
 
-        GameObject memory = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        memory.name = "WorldLabs_Memory_World_Slot_PLACEHOLDER";
+        GameObject memory = new GameObject("Enchanted Bamboo Forest Sanctuary • PICO 300K");
         memory.transform.SetParent(holder.transform, false);
-        memory.GetComponent<Renderer>().sharedMaterial = goldMaterial;
-        memory.transform.localScale = Vector3.one * 0.12f;
-        UnityEngine.Object.DestroyImmediate(memory.GetComponent<Collider>());
+        GaussianSplatRenderer splatRenderer = memory.AddComponent<GaussianSplatRenderer>();
+        splatRenderer.m_Asset = AssetDatabase.LoadAssetAtPath<GaussianSplatAsset>(
+            WayfinderSplatImporter.AssetPath);
+        splatRenderer.m_ShaderSplats = AssetDatabase.LoadAssetAtPath<Shader>(
+            "Packages/org.nesnausk.gaussian-splatting/Shaders/RenderGaussianSplats.shader");
+        splatRenderer.m_ShaderComposite = AssetDatabase.LoadAssetAtPath<Shader>(
+            "Packages/org.nesnausk.gaussian-splatting/Shaders/GaussianComposite.shader");
+        splatRenderer.m_ShaderDebugPoints = AssetDatabase.LoadAssetAtPath<Shader>(
+            "Packages/org.nesnausk.gaussian-splatting/Shaders/GaussianDebugRenderPoints.shader");
+        splatRenderer.m_ShaderDebugBoxes = AssetDatabase.LoadAssetAtPath<Shader>(
+            "Packages/org.nesnausk.gaussian-splatting/Shaders/GaussianDebugRenderBoxes.shader");
+        splatRenderer.m_CSSplatUtilities = AssetDatabase.LoadAssetAtPath<ComputeShader>(
+            "Packages/org.nesnausk.gaussian-splatting/Shaders/SplatUtilities.compute");
+        splatRenderer.m_SHOrder = 0;
+        splatRenderer.m_SortNthFrame = 2;
+        splatRenderer.m_OpacityScale = 0.05f;
+        splatRenderer.m_RenderEnabled = false;
         memory.SetActive(false);
+
+        ParticleSystem sparks = CreateMemoryTransitionSparks(goldMaterial);
+        Light transitionLight = CreateMemoryTransitionLight();
 
         TextMesh label = CreateLegibleText(
             "WorldLabs Slot Label", new Vector3(0f, 0.82f, 0f), 48, 0.024f,
@@ -920,7 +941,131 @@ public static class WayfinderSceneBuilder
 
         WayfinderWorldRevealSlot slot = holder.AddComponent<WayfinderWorldRevealSlot>();
         slot.Configure(original.transform, memory.transform);
+        slot.ConfigureReward(splatRenderer, sparks, transitionLight);
         return slot;
+    }
+
+    private static ParticleSystem CreateMemoryTransitionSparks(Material fallbackMaterial)
+    {
+        GameObject root = new GameObject("Gate Spark Veil • Unity Native");
+        root.transform.position = new Vector3(0f, 1.55f, 4.05f);
+        ParticleSystem particles = root.AddComponent<ParticleSystem>();
+        ParticleSystem.MainModule main = particles.main;
+        main.playOnAwake = false;
+        main.loop = false;
+        main.duration = 2.3f;
+        main.startLifetime = new ParticleSystem.MinMaxCurve(1.1f, 2.4f);
+        main.startSpeed = new ParticleSystem.MinMaxCurve(0.08f, 0.55f);
+        main.startSize = new ParticleSystem.MinMaxCurve(0.018f, 0.075f);
+        main.startColor = new ParticleSystem.MinMaxGradient(
+            new Color(0.32f, 1f, 0.82f, 0.92f), new Color(1f, 0.72f, 0.24f, 0.96f));
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.maxParticles = 900;
+
+        ParticleSystem.EmissionModule emission = particles.emission;
+        emission.enabled = true;
+        emission.rateOverTime = 55f;
+        emission.SetBursts(new[] { new ParticleSystem.Burst(0f, 520) });
+        ParticleSystem.ShapeModule shape = particles.shape;
+        shape.enabled = true;
+        shape.shapeType = ParticleSystemShapeType.Box;
+        shape.scale = new Vector3(2.55f, 2.55f, 0.48f);
+        ParticleSystem.NoiseModule noise = particles.noise;
+        noise.enabled = true;
+        noise.strength = 0.42f;
+        noise.frequency = 0.33f;
+        noise.scrollSpeed = 0.16f;
+
+        ParticleSystemRenderer renderer = root.GetComponent<ParticleSystemRenderer>();
+        Shader particleShader = Shader.Find("Particles/Standard Unlit");
+        if (particleShader != null)
+        {
+            Material particleMaterial = new Material(particleShader) { name = "Memory Spark Veil" };
+            particleMaterial.SetColor("_Color", Color.white);
+            renderer.sharedMaterial = particleMaterial;
+        }
+        else renderer.sharedMaterial = fallbackMaterial;
+        particles.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+        return particles;
+    }
+
+    private static Light CreateMemoryTransitionLight()
+    {
+        GameObject lightObject = new GameObject("Memory World Transition Glow");
+        lightObject.transform.position = new Vector3(0f, 1.55f, 3.65f);
+        Light light = lightObject.AddComponent<Light>();
+        light.type = LightType.Point;
+        light.color = new Color(1f, 0.72f, 0.30f);
+        light.range = 7f;
+        light.intensity = 0.15f;
+        return light;
+    }
+
+    private static WayfinderScriptedReflectionController CreateScriptedReflection(
+        WayfinderWorldRevealSlot worldSlot,
+        MonoBehaviour palmSource,
+        Material panelMaterial,
+        Material jadeMaterial,
+        Material goldMaterial)
+    {
+        GameObject root = new GameObject("The World Asks • Scripted Reflection Journal");
+        root.transform.SetParent(Camera.main.transform, false);
+        root.transform.localPosition = new Vector3(0f, -0.02f, 1.02f);
+        CreatePanelBehind(root.transform, new Vector3(1.20f, 0.88f, 0.035f), panelMaterial);
+
+        TextMesh prompt = CreateLegibleText(
+            "World Voice", Vector3.zero, 64, 0.0064f,
+            TextAnchor.MiddleCenter, TextAlignment.Center, new Color(1f, 0.90f, 0.55f));
+        prompt.transform.SetParent(root.transform, false);
+        prompt.transform.localPosition = new Vector3(0f, 0.24f, -0.015f);
+
+        TextMesh journal = CreateLegibleText(
+            "Open Journal", Vector3.zero, 48, 0.0052f,
+            TextAnchor.MiddleCenter, TextAlignment.Center, new Color(0.78f, 0.98f, 0.89f));
+        journal.transform.SetParent(root.transform, false);
+        journal.transform.localPosition = new Vector3(0f, 0.01f, -0.015f);
+
+        Transform[] buttons = new Transform[3];
+        TextMesh[] labels = new TextMesh[3];
+        float[] x = { -0.36f, 0f, 0.36f };
+        for (int index = 0; index < buttons.Length; index++)
+        {
+            (buttons[index], labels[index]) = CreateReflectionTouchButton(
+                root.transform, "Reflection Choice " + (index + 1),
+                new Vector3(x[index], -0.25f, -0.08f),
+                index == 1 ? goldMaterial : jadeMaterial);
+        }
+        (Transform quietButton, TextMesh quietLabel) = CreateReflectionTouchButton(
+            root.transform, "Reflection Skip or Done",
+            new Vector3(0f, -0.43f, -0.08f), goldMaterial, 0.38f);
+
+        WayfinderScriptedReflectionController controller =
+            root.AddComponent<WayfinderScriptedReflectionController>();
+        controller.Configure(
+            worldSlot, palmSource, root, prompt, journal,
+            buttons, labels, quietButton, quietLabel);
+        root.SetActive(false);
+        return controller;
+    }
+
+    private static (Transform, TextMesh) CreateReflectionTouchButton(
+        Transform parent, string name, Vector3 localPosition, Material material, float width = 0.27f)
+    {
+        GameObject anchor = new GameObject(name);
+        anchor.transform.SetParent(parent, false);
+        anchor.transform.localPosition = localPosition;
+        GameObject visual = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        visual.name = name + " Visual";
+        visual.transform.SetParent(anchor.transform, false);
+        visual.transform.localScale = new Vector3(width, 0.11f, 0.025f);
+        visual.GetComponent<Renderer>().sharedMaterial = material;
+        UnityEngine.Object.DestroyImmediate(visual.GetComponent<Collider>());
+        TextMesh label = CreateLegibleText(
+            name + " Label", Vector3.zero, 45, 0.0052f,
+            TextAnchor.MiddleCenter, TextAlignment.Center, new Color(0.04f, 0.12f, 0.10f));
+        label.transform.SetParent(anchor.transform, false);
+        label.transform.localPosition = new Vector3(0f, 0f, -0.02f);
+        return (anchor.transform, label);
     }
 
     private static WayfinderRewardMaterializationSlot CreateTripoPlaceholderSlot(Material material)

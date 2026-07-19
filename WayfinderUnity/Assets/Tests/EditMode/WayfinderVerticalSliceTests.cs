@@ -207,7 +207,7 @@ namespace Wayfinder.Tests
                 .SelectMany(root => root.GetComponentsInChildren<Transform>(true))
                 .Select(item => item.name).ToArray();
             CollectionAssert.Contains(names, "WorldLabs_Original_World_Slot_PLACEHOLDER");
-            CollectionAssert.Contains(names, "WorldLabs_Memory_World_Slot_PLACEHOLDER");
+            CollectionAssert.Contains(names, "Enchanted Bamboo Forest Sanctuary • PICO 300K");
             CollectionAssert.Contains(names, "Tripo_Reward_Slot_PLACEHOLDER");
             CollectionAssert.Contains(names, "Analog Speedometer • 0 REST 1 FLOW 2 RUSH");
             CollectionAssert.Contains(names, "Palm Circle Guide • Calm Analog Clock");
@@ -257,6 +257,21 @@ namespace Wayfinder.Tests
             Assert.That(WayfinderVerticalSliceController.StoneStory(1), Does.Contain("STONE I  •  LISTEN"));
             Assert.That(WayfinderVerticalSliceController.StoneStory(2), Does.Contain("STONE II  •  PATIENCE"));
             Assert.That(WayfinderVerticalSliceController.StoneStory(3), Does.Contain("STONE III  •  PEACE"));
+        }
+
+        [Test]
+        public void ScriptedReflection_IsOfflineDeterministicAndMapsToRewardArtifacts()
+        {
+            Assert.That(WayfinderScriptedReflectionController.OpeningPrompt,
+                Does.Contain("WHAT FEELS MOST PRESENT"));
+            Assert.That(WayfinderScriptedReflectionController.SecondPrompt(0),
+                Does.Contain("PATIENCE"));
+            Assert.That(WayfinderScriptedReflectionController.ChoiceForSecondAnswer(0),
+                Is.EqualTo(WayfinderReflectionChoice.PatienceStone));
+            Assert.That(WayfinderScriptedReflectionController.ChoiceForSecondAnswer(1),
+                Is.EqualTo(WayfinderReflectionChoice.MemorySeed));
+            Assert.That(WayfinderScriptedReflectionController.ChoiceForSecondAnswer(2),
+                Is.EqualTo(WayfinderReflectionChoice.StillWaterLantern));
         }
 
         [Test]
