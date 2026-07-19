@@ -47,6 +47,16 @@ export class SplatMorphSystem extends createSystem({}) {
    * creating them; the modifiers attach later, on the first frame where both
    * meshes have finished loading.
    */
+  /** Drive the cross-dissolve, 0 (scene A) to 1 (scene B). */
+  setPhase(value: number): void {
+    this.phase.value = Math.min(1, Math.max(0, value));
+  }
+
+  /** True once both splats have loaded and the modifier is attached. */
+  get isReady(): boolean {
+    return this.attached;
+  }
+
   setScenes(sceneA: Entity, sceneB: Entity): void {
     this.sceneEntities = [sceneA, sceneB];
   }
@@ -57,10 +67,9 @@ export class SplatMorphSystem extends createSystem({}) {
       return;
     }
 
-    // Rail position drives the morph directly — no smoothing, so the worlds
-    // track the hand exactly like the cube does.
-    const cubeSystem = this.world.getSystem(HandFollowCubeSystem);
-    this.phase.value = cubeSystem ? cubeSystem.railProgress : 0;
+    // Phase is pushed in by the Director via setPhase(), not pulled from a rail
+    // here: the 四 morph is driven by BOTH hands averaged, and which rails mean
+    // what is the Director's business, not this system's.
 
     // Push the new uniform value into the compiled program. updateVersion() is
     // the cheap per-frame call; the uniform updater registered at compile time

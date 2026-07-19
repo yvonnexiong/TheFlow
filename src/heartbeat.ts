@@ -17,9 +17,17 @@ const HEARTBEAT_URL = "./sfx/effect_heartbeat_1.mp3";
 /** Playback gain. Deliberately low; raise if inaudible on Quest speakers. */
 const VOLUME = 0.35;
 
-/** Fallback tempo for the seed ring's pulse, used only until the file has
- *  decoded. Once loaded, the ring follows the sample's real length instead. */
+/** Tempo the seed ring pulses at.
+ *
+ *  Set BY HAND, matched to the sample by ear. Deriving it from the file's
+ *  duration only works if the file is exactly one beat — the current one is a
+ *  ~10s loop of many beats, which derived to 6 BPM and left the ring visibly
+ *  frozen. A duration-derived value is used only when the file is short enough
+ *  to plausibly be a single cycle (see SINGLE_BEAT_MAX_SECONDS). */
 export const HEARTBEAT_BPM = 54;
+
+/** Longest a sample can be and still be treated as one beat. */
+const SINGLE_BEAT_MAX_SECONDS = 2.0;
 
 export class Heartbeat {
   private ctx: AudioContext | null = null;
@@ -33,14 +41,16 @@ export class Heartbeat {
   /**
    * Tempo the ring should pulse at, in BPM.
    *
-   * Assumes the sample is ONE heartbeat cycle, so its duration is the beat
-   * period. If the file holds several beats the ring will pulse too slowly —
-   * check the decoded duration logged by load() and set HEARTBEAT_BPM by hand
-   * if that's the case.
+   * Prefers the hand-set HEARTBEAT_BPM, falling back to the sample's own
+   * length only when that length is short enough to be a single beat.
    */
   get bpm(): number {
-    if (!this.buffer || this.buffer.duration <= 0) return HEARTBEAT_BPM;
-    return 60 / this.buffer.duration;
+    const d = this.buffer?.duration ?? 0;
+    // Only trust the file's length when it could actually be a single beat.
+    // A multi-beat loop would otherwise report a tempo an order of magnitude
+    // too slow, and the ring would sit still.
+    if (d > 0 && d <= SINGLE_BEAT_MAX_SECONDS) return 60 / d;
+    return HEARTBEAT_BPM;
   }
 
   /** Fetch and decode ahead of time so the first beat isn't late. */
@@ -52,9 +62,13 @@ export class Heartbeat {
         if (!res.ok) throw new Error(`HTTP ${res.status} for ${HEARTBEAT_URL}`);
         const bytes = await res.arrayBuffer();
         this.buffer = await this.context().decodeAudioData(bytes);
+        const derived =
+          this.buffer.duration <= SINGLE_BEAT_MAX_SECONDS
+            ? "from file"
+            : `fixed (file is a ${this.buffer.duration.toFixed(1)}s loop)`;
         console.log(
           `[Heartbeat] loaded ${this.buffer.duration.toFixed(2)}s ` +
-            `→ ring pulse ${this.bpm.toFixed(1)} BPM`,
+            `→ ring pulse ${this.bpm.toFixed(1)} BPM, ${derived}`,
         );
       } catch (err) {
         // Silence is survivable; a thrown error during 一 is not.

@@ -23,6 +23,13 @@ On Quest over LAN: `https://<PC-IP>:8081` (accept the cert warning), or
 - **three** = `super-three@0.181.0` (Vite plugin dedupes IWSDK's bundled r177).
 - Vite + TypeScript. Node ≥ 20.19.
 
+## Story
+
+**[STORY.md](STORY.md) is canonical.** Read it before changing anything about
+what a scene *means*. It also carries a table of where this build currently
+diverges from the intended narrative — the largest being that scenes 3 and 4 are
+meant to share ONE repeating circular gesture, which is not what is built.
+
 ## The experience: ONE continuous session, phases not scenes
 
 Never separate apps or hard scene-loads — the philosophy depends on unbroken

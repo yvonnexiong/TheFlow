@@ -7,6 +7,7 @@ import {
 } from "./gaussianSplatLoader.js";
 import { HandFollowCubeSystem } from "./handFollowCube.js";
 import { SplatRevealSystem } from "./splatReveal.js";
+import { SplatMorphSystem } from "./splatMorph.js";
 import { Heartbeat } from "./heartbeat.js";
 import { Sound } from "./audio.js";
 
@@ -28,7 +29,7 @@ import { Sound } from "./audio.js";
 // ever re-attaches to a second set of meshes.
 //
 // The two-splat cross-fade (SplatMorphSystem) is no longer part of the journey.
-type PhaseId = "breath" | "disc" | "reveal";
+type PhaseId = "breath" | "disc" | "reveal" | "morph";
 
 /** DEV ONLY. Scene 0 is specified as pure white with no UI, which means a
  *  successful load and a hung load look identical — both are a blank white
@@ -101,6 +102,31 @@ const DISC_URL = "./glbs/taichi_platform.glb";
  *  sound is the ground arriving, and it has to land on the movement. */
 const DISC_SOUND_URL = "./sfx/effect_ground_1.mp3";
 const DISC_SOUND_VOLUME = 0.7;
+
+/** Scene 2 — a swish when the right hand moves with intent.
+ *
+ *  Thresholds come from what tracked hands actually do: at rest they jitter at
+ *  0.05–0.15 m/s, casual repositioning is 0.3–0.5, and a deliberate sweep is
+ *  1–2. Firing at 0.9 sits clear of the first two.
+ *
+ *  Two separate guards, because they catch different failures: the hysteresis
+ *  gap stops a hand hovering near the threshold from stuttering, and the
+ *  cooldown bounds how often it can fire even when speed genuinely oscillates
+ *  across the whole gap. */
+const GESTURE_SOUND_URL = "./sfx/sound_gestue_2.mp3";
+const GESTURE_SOUND_VOLUME = 0.5;
+const GESTURE_SPEED_ON = 0.9; // m/s — fire above this
+const GESTURE_SPEED_OFF = 0.4; // m/s — re-arm below this
+const GESTURE_COOLDOWN = 0.4; // seconds, minimum between triggers
+
+/** 四 morph — the world the reveal transitions INTO. */
+const MORPH_SPLAT = "Scene2/newMoutains.spz";
+
+/** Handoff from 三 to 四, in seconds. The markers glow where the player left
+ *  them, vanish, and return laid out for the next gesture — so the change of
+ *  axis is announced by their absence rather than by them silently rotating. */
+const GLOW_SECONDS = 2.0;
+const HANDLES_GONE_SECONDS = 0.9;
 const DISC_SOURCE_DIAMETER = 0.998;
 /** Half the source thickness (its Z half-extent) — becomes the Y half-extent
  *  once flat, and is how far to sink the mesh so its TOP sits on the ground. */
@@ -129,7 +155,7 @@ const splatPath = (p: string) =>
 const REVEAL_SPLAT = "Scene1/Enchanted Bamboo Forest Sanctuary.compressed.ply";
 
 export class DirectorSystem extends createSystem({}) {
-  private readonly phases: PhaseId[] = ["breath", "disc", "reveal"];
+  private readonly phases: PhaseId[] = ["breath", "disc", "reveal", "morph"];
   private index = 0;
   private started = false;
   private loaded = false;
@@ -141,11 +167,25 @@ export class DirectorSystem extends createSystem({}) {
   /** Highest railProgress seen this session — diagnostic only. */
   private railPeak = 0;
 
+  /** Handoff sub-state inside the reveal phase: idle -> glowing -> hidden ->
+   *  done. Separate from PhaseId because it is a sequence within one phase. */
+  private handoff: "idle" | "glowing" | "hidden" | "done" = "idle";
+  private handoffTimer = 0;
+  private morphEntity: Entity | null = null;
+
   private circle!: THREE.Mesh;
   private circleMat!: THREE.MeshBasicMaterial;
   private domOverlay: HTMLElement | null = null;
   private readonly heartbeat = new Heartbeat();
   private readonly groundSound = new Sound(DISC_SOUND_URL, DISC_SOUND_VOLUME);
+  private readonly gestureSound = new Sound(
+    GESTURE_SOUND_URL,
+    GESTURE_SOUND_VOLUME,
+  );
+  /** False while speed is above the re-arm threshold — prevents one continuous
+   *  fast movement from retriggering every frame. */
+  private gestureArmed = true;
+  private gestureCooldown = 0;
 
   private revealEntity: Entity | null = null;
 
@@ -198,8 +238,10 @@ export class DirectorSystem extends createSystem({}) {
       this.started = true;
       this.enterPhase(0);
       this.preloadReveal();
+      this.preloadMorph();
       void this.heartbeat.load(); // decode during the load gate
       void this.groundSound.load();
+      void this.gestureSound.load();
     }
 
     const phase = this.phases[this.index];
@@ -214,15 +256,38 @@ export class DirectorSystem extends createSystem({}) {
       return;
     }
 
-    // "reveal" — scene 2. The splat is revealed by hand: the rail cube's
+    if (phase === "morph") {
+      // 四 — both hands sweeping in opposition drive the cross-dissolve into
+      // the mountains. Averaged, so one hand alone only gets halfway.
+      const rails = this.world.getSystem(HandFollowCubeSystem);
+      const morph = this.world.getSystem(SplatMorphSystem);
+      if (!rails || !morph) return;
+
+      morph.setPhase(rails.bothProgress);
+
+      // Reveal scene B only once the dissolve shader owns it. At phase 0 the
+      // modifier renders it fully dissolved, so there is nothing to see — but
+      // before attach it would draw at full opacity, straight over the bamboo.
+      if (morph.isReady && this.morphEntity?.object3D?.visible === false) {
+        this.morphEntity.object3D.visible = true;
+        console.log("[Director] morph attached — mountains armed");
+      }
+      return;
+    }
+
+    // "reveal" — scene 2. The splat is revealed by hand: the right rail's
     // progress drives the wavefront directly, so the world only appears as
-    // far as the player has reached. Nothing advances past this yet.
+    // far as the player has reached.
     const cube = this.world.getSystem(HandFollowCubeSystem);
     const reveal = this.world.getSystem(SplatRevealSystem);
     if (!cube || !reveal) return;
 
     const p = cube.railProgress;
     reveal.setProgress(p);
+
+    this.updateGestureSound(cube.rightHandSpeed, delta);
+
+    this.updateRevealHandoff(reveal.isRevealed, delta, cube);
 
     // Report the high-water mark, so it is visible whether the gesture is
     // actually reaching 1.0 — a rail that stalls at 0.8 and a reveal that is
@@ -233,6 +298,65 @@ export class DirectorSystem extends createSystem({}) {
         `[Director] rail ${p.toFixed(2)} → fully revealed to ` +
           `${reveal.fullyRevealedRadius.toFixed(0)}m`,
       );
+    }
+  }
+
+  /**
+   * The beat between 三 and 四.
+   *
+   * Once the world is fully revealed: glow both markers for GLOW_SECONDS, hide
+   * them, pause, then advance. Held in the reveal phase rather than in enter/
+   * exit hooks because it is a timed sequence, not an instant.
+   */
+  private updateRevealHandoff(
+    revealed: boolean,
+    delta: number,
+    cube: HandFollowCubeSystem,
+  ) {
+    if (!revealed || this.handoff === "done") return;
+
+    this.handoffTimer += delta;
+
+    if (this.handoff === "idle") {
+      this.handoff = "glowing";
+      this.handoffTimer = 0;
+      cube.setGlow(true);
+      console.log("[Director] reveal complete — markers glowing");
+      return;
+    }
+
+    if (this.handoff === "glowing" && this.handoffTimer >= GLOW_SECONDS) {
+      this.handoff = "hidden";
+      this.handoffTimer = 0;
+      cube.setGlow(false);
+      cube.setVisible(false);
+      console.log("[Director] markers away");
+      return;
+    }
+
+    if (this.handoff === "hidden" && this.handoffTimer >= HANDLES_GONE_SECONDS) {
+      this.handoff = "done";
+      this.advance();
+    }
+  }
+
+  /**
+   * Fire the gesture swish on a RISING edge of hand speed.
+   *
+   * Rising-edge rather than level-triggered: a level test would retrigger every
+   * frame the hand stays fast, which at 72Hz is a machine gun.
+   */
+  private updateGestureSound(speed: number, delta: number) {
+    this.gestureCooldown = Math.max(0, this.gestureCooldown - delta);
+
+    if (this.gestureArmed && speed >= GESTURE_SPEED_ON) {
+      if (this.gestureCooldown === 0) {
+        void this.gestureSound.play();
+        this.gestureCooldown = GESTURE_COOLDOWN;
+      }
+      this.gestureArmed = false;
+    } else if (!this.gestureArmed && speed <= GESTURE_SPEED_OFF) {
+      this.gestureArmed = true;
     }
   }
 
@@ -288,7 +412,20 @@ export class DirectorSystem extends createSystem({}) {
         return;
       }
 
-      console.log("[Director] in XR — ring in, heartbeat in");
+      // DIAGNOSTIC: which reference space did we actually get?
+      //
+      // IWSDK asks for local-floor but falls back to `local` without
+      // complaining, and under `local` the origin is the HEAD at session start,
+      // not the floor — so ground-level content ends up floating at whatever
+      // height the player happened to be. Camera Y tells us which we got:
+      // ~1.5-1.8 standing (or ~1.2 seated) means local-floor is working;
+      // near 0 means we are in `local` and everything at y=0 is at eye level.
+      this.world.camera.getWorldPosition(this.camPos);
+      console.log(
+        `[Director] in XR — ring in, heartbeat in. ` +
+          `camera y=${this.camPos.y.toFixed(2)}m ` +
+          `(≈0 means reference space fell back to "local" and ground is wrong)`,
+      );
       this.circle.visible = true;
       this.breathElapsed = 0;
       this.inCircleFrames = 0;
@@ -320,6 +457,23 @@ export class DirectorSystem extends createSystem({}) {
       console.log("[Director] begin: deliberate hand sweep (fallback)");
       this.advance();
     }
+  }
+
+  /**
+   * Start loading the 四 splat at startup, kept invisible.
+   *
+   * Only the LOADING is done early. setScenes() still waits for the morph
+   * phase, because splatMorph and splatReveal both drive `worldModifier` and
+   * there is only one slot — attaching the morph while 三 is still revealing
+   * would silently overwrite the reveal's own modifier.
+   */
+  private preloadMorph() {
+    this.morphEntity = this.world.createTransformEntity();
+    if (this.morphEntity.object3D) this.morphEntity.object3D.visible = false;
+    this.morphEntity.addComponent(GaussianSplatLoader, {
+      splatUrl: splatPath(MORPH_SPLAT),
+      animate: false,
+    });
   }
 
   /** Create the scene-1 splat entity and start loading it now, kept invisible
@@ -467,15 +621,37 @@ export class DirectorSystem extends createSystem({}) {
       this.discElapsed = 0;
       this.discGrown = false;
       void this.groundSound.play();
+    } else if (phase === "morph") {
+      // The revealed world becomes scene A; the mountains (preloaded at
+      // startup) are scene B. Both stay loaded — a cross-dissolve needs both
+      // present at once. Scene B stays HIDDEN until the morph modifier has
+      // attached, or it would flash in at full opacity for a frame before the
+      // shader has anything to say about it.
+      if (this.revealEntity && this.morphEntity) {
+        this.world
+          .getSystem(SplatMorphSystem)
+          ?.setScenes(this.revealEntity, this.morphEntity);
+      } else {
+        console.error("[Director] morph entered without both worlds loaded");
+      }
+
+      // Rails come back laid out horizontally and opposed, seated in front of
+      // wherever the player is now.
+      if (cube) {
+        cube.configureForMorph();
+        cube.placeInFrontOf(this.world.camera);
+        cube.setVisible(true);
+      }
     } else if (phase === "reveal") {
       // Scene 2 — the splat, revealed by hand. Start fully hidden; the rail
       // cube's progress is what brings it in, so the player does the revealing.
-      // Seat the rail in front of wherever the player actually ended up after
+      // Seat the rails in front of wherever the player actually ended up after
       // stepping in — not where they started. Must happen before setVisible so
-      // it never shows for a frame in the wrong place.
+      // they never show for a frame in the wrong place.
       if (!cube) {
         console.error("[Director] HandFollowCubeSystem NOT REGISTERED");
       } else {
+        cube.configureForReveal();
         cube.placeInFrontOf(this.world.camera);
       }
       cube?.setVisible(true);
@@ -489,12 +665,12 @@ export class DirectorSystem extends createSystem({}) {
     const loader = this.world.getSystem(GaussianSplatLoaderSystem);
 
     if (phase === "reveal") {
+      // Detach the reveal modifier but KEEP the splat loaded and keep the
+      // entity reference: 四 cross-dissolves *from* this world, so unloading
+      // it here would morph away from nothing.
       this.world.getSystem(SplatRevealSystem)?.reset();
-      if (this.revealEntity) {
-        loader?.unload(this.revealEntity, { animate: false }).catch(() => {});
-      }
-      this.revealEntity = null;
     }
+    void loader;
   }
 
   // ----------------------------------------------------------
