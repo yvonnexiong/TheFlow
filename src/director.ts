@@ -223,12 +223,29 @@ const RETURN_SPLAT_Y = 1.5;
  *  stars dim as the journey ends rather than being switched off. */
 const COSMOS_FADE_SECONDS = 3.5;
 
-/** Scene 5's music. Looping ambience under the return, faded in rather than
- *  cut in — arriving at full volume would announce itself as a cue instead of
- *  as something that was always there. */
-const RETURN_MUSIC_URL = "./sfx/sound_gestue_1_last_scene.mp3";
-const RETURN_MUSIC_VOLUME = 0.45;
-const RETURN_MUSIC_FADE_IN = 3.0;
+
+/**
+ * Looping music per scene, keyed by the phase it begins with.
+ *
+ * Each track starts as its world arrives and the previous one fades under it,
+ * so the change of place carries a change of sound. Faded in rather than cut
+ * in — music arriving at full volume announces itself as a cue instead of as
+ * something that was always there.
+ *
+ * The earlier scenes stay deliberately unscored: 一 has only the heartbeat and
+ * 二/三 only the sounds the player's own movement makes. Music arrives with the
+ * mountains, which is the first world the player did not summon.
+ */
+const SCENE_MUSIC: Partial<Record<PhaseId, string>> = {
+  expand: "./sfx/bgm_scene_ink.mp3", // standing in the mountains
+  resonance: "./sfx/bgm_scene_cosmo.mp3", // the cosmos
+  return: "./sfx/sound_gestue_1_last_scene.mp3", // the return to 道
+};
+const MUSIC_VOLUME = 0.45;
+const MUSIC_FADE_IN = 3.0;
+/** Overlap on the handover. Longer than the fade-in so the outgoing track is
+ *  still under the new one as it arrives, rather than leaving a gap. */
+const MUSIC_FADE_OUT = 4.0;
 
 /** Handoff from 三 to 四, in seconds. The markers glow where the player left
  *  them, vanish, and return laid out for the next gesture — so the change of
@@ -312,6 +329,11 @@ const DEBUG_HUD = false;
 const START_PHASE: PhaseId | null = null;
 
 /** The opening line, as an image. */
+/** The 2D landing screen shown before the player enters XR, and the palette
+ *  taken from it so the enter button belongs to the same image. */
+const LANDING_IMAGE_URL = "./ui/MainUIIntro.png";
+const LANDING_GOLD = "#e8c87a";
+
 const INTRO_TEXT_URL = "./introText.png";
 const INTRO_TEXT_ASPECT = 981 / 260;
 const INTRO_TEXT_WIDTH = 1.3; // metres — ~50 degrees across at INTRO_TEXT_DIST
@@ -410,11 +432,9 @@ export class DirectorSystem extends createSystem({}) {
   private domOverlay: HTMLElement | null = null;
   private readonly heartbeat = new Heartbeat();
   private readonly groundSound = new Sound(DISC_SOUND_URL, DISC_SOUND_VOLUME);
-  private readonly returnMusic = new Sound(
-    RETURN_MUSIC_URL,
-    RETURN_MUSIC_VOLUME,
-    true, // loops until the piece ends
-  );
+  /** One looping Sound per scored scene, and whichever is currently playing. */
+  private readonly sceneMusic = new Map<PhaseId, Sound>();
+  private playingMusic: Sound | null = null;
   /** One Sound and one rising-edge state per gesture, built from
    *  GESTURE_SOUNDS. Kept separate per phase so crossing into the next gesture
    *  starts fresh rather than inheriting the last one's armed state. */
@@ -490,7 +510,11 @@ export class DirectorSystem extends createSystem({}) {
       this.preloadReveal();
       void this.heartbeat.load(); // decode during the load gate
       void this.groundSound.load();
-      void this.returnMusic.load();
+      for (const [phase, url] of Object.entries(SCENE_MUSIC)) {
+        const track = new Sound(url, MUSIC_VOLUME, true);
+        this.sceneMusic.set(phase as PhaseId, track);
+        void track.load();
+      }
       for (const [phase, url] of Object.entries(GESTURE_SOUNDS)) {
         const sound = new Sound(url, GESTURE_SOUND_VOLUME);
         this.gestureSounds.set(phase as PhaseId, sound);
@@ -746,9 +770,10 @@ export class DirectorSystem extends createSystem({}) {
         this.preloadExpand();
         this.preloadReturn();
       }
-      // The overlay must come down even outside XR: it sits above the "enter"
-      // button, so leaving it up would make entering the session impossible.
-      this.setLoadingVisible(false);
+      // The landing screen STAYS — it is the title card, not a loading veil.
+      // It now sits under the button rather than over it, so the player can
+      // enter as soon as this flag says the world is ready.
+      document.body.dataset.worldReady = "1";
     }
 
     // 一 does not begin until the player is actually inside the session. The
@@ -785,6 +810,10 @@ export class DirectorSystem extends createSystem({}) {
           `camera y=${this.camPos.y.toFixed(2)}m ` +
           `(≈0 means reference space fell back to "local" and ground is wrong)`,
       );
+      // In XR now: the flat landing screen and its button have done their job.
+      this.setLoadingVisible(false);
+      document.body.dataset.inXr = "1";
+
       // The line comes first, alone. Circle and heartbeat wait.
       this.introStage = "textIn";
       this.introTimer = 0;
@@ -1155,6 +1184,23 @@ export class DirectorSystem extends createSystem({}) {
     this.introText.rotation.y = Math.atan2(-dir.x, -dir.z);
   }
 
+  /**
+   * Hand over to this phase's music, if it has any.
+   *
+   * Phases without a track leave the current one playing rather than falling
+   * silent — the mountains' music should carry through the gesture that leaves
+   * them, not stop the moment the phase index changes.
+   */
+  private startSceneMusic(phase: PhaseId) {
+    const next = this.sceneMusic.get(phase);
+    if (!next || next === this.playingMusic) return;
+
+    this.playingMusic?.stop(MUSIC_FADE_OUT);
+    this.playingMusic = next;
+    void next.play(MUSIC_FADE_IN);
+    console.log(`[Director] music: ${phase}`);
+  }
+
   /** Dissolve the cosmos after the final gesture. */
   private updateCosmosFade(delta: number) {
     if (!this.cosmosFading) return;
@@ -1422,6 +1468,8 @@ export class DirectorSystem extends createSystem({}) {
     this.handoff = "idle";
     this.handoffTimer = 0;
 
+    this.startSceneMusic(phase);
+
     const cube = this.world.getSystem(HandFollowCubeSystem);
     cube?.reset();
 
@@ -1447,10 +1495,6 @@ export class DirectorSystem extends createSystem({}) {
       this.discGrown = false;
       void this.groundSound.play();
     } else if (phase === "return") {
-      // Music comes up as the last scene opens and stays under everything that
-      // follows — the flare, the sky dissolving, the stillness at the end.
-      void this.returnMusic.play(RETURN_MUSIC_FADE_IN);
-
       // The celestial world becomes the one being left; the final world
       // arrives. Same restage as before — the modifier, the phase uniform and
       // the prewarm all already exist.
@@ -1586,24 +1630,47 @@ export class DirectorSystem extends createSystem({}) {
   private buildLoadingOverlay() {
     const style = document.createElement("style");
     style.textContent = `
-      /* Scene 0 is pure white, silent, and has no UI — so the loading gate is
-         an empty white field. No spinner, no text, no progress. It still
-         blocks the start until the world is ready; it just doesn't announce
-         itself. The player sees white, then a circle. */
-      #flow-loading { position:fixed; inset:0; z-index:10000; background:#fff;
-        display:flex; align-items:center; justify-content:center; }
-      /* Dev-only mark. Grey on white so it reads against the void, and quiet
-         enough that leaving it on by accident isn't jarring. */
-      #flow-loading .mark { width:34px; height:34px; border:2px solid #e6e6e6;
-        border-top-color:#bbb; border-radius:50%;
-        animation:flowspin 1.4s linear infinite; }
+      /* The landing screen. Sits UNDER the enter button (9990 vs 10000) so the
+         button is always clickable — the previous overlay was above it, which
+         is why it had to be dismissed before the player could get into XR. */
+      #flow-loading { position:fixed; inset:0; z-index:9990;
+        background:#0d1f3d url("${LANDING_IMAGE_URL}") center/cover no-repeat;
+        display:flex; align-items:flex-end; justify-content:center;
+        padding-bottom:6vh; }
+
+      /* A gold veil while the world loads, lifting once it is ready. Keeps the
+         image legible as a backdrop rather than competing with the button. */
+      #flow-loading::after { content:""; position:absolute; inset:0;
+        background:radial-gradient(ellipse at 50% 62%,
+          rgba(13,31,61,0) 30%, rgba(13,31,61,0.55) 100%);
+        pointer-events:none; }
+
+      #flow-loading .status { position:relative; display:flex;
+        align-items:center; gap:16px;
+        font:400 16px/1 Georgia,"Times New Roman",serif; letter-spacing:.26em;
+        color:${LANDING_GOLD}; text-transform:uppercase;
+        text-shadow:0 0 20px rgba(232,200,122,.5);
+        animation:statusBreathe 3.2s ease-in-out infinite; }
+      /* Breathes rather than sits still — the piece opens on a heartbeat, and
+         the wait should feel like part of it. */
+      @keyframes statusBreathe { 0%,100% { opacity:.62 } 50% { opacity:1 } }
+
+      #flow-loading .mark { width:22px; height:22px; border-radius:50%;
+        border:2px solid rgba(232,200,122,.25);
+        border-top-color:${LANDING_GOLD};
+        animation:flowspin 1.2s linear infinite; }
       @keyframes flowspin { to { transform:rotate(360deg); } }
+
+      /* Once the world is ready the status line goes and the button takes over. */
+      body[data-world-ready] #flow-loading .status { display:none; }
     `;
     document.head.appendChild(style);
 
     const el = document.createElement("div");
     el.id = "flow-loading";
-    el.innerHTML = SHOW_LOADING_INDICATOR ? `<div class="mark"></div>` : "";
+    el.innerHTML = SHOW_LOADING_INDICATOR
+      ? `<div class="status"><div class="mark"></div>Preparing the world</div>`
+      : "";
     document.body.appendChild(el);
     this.domOverlay = el;
   }

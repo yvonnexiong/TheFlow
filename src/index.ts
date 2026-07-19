@@ -223,15 +223,60 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     // The panel above carried the only Enter XR control, so removing it would
     // otherwise leave no way into the session. Delete this block when the
     // panel comes back.
-    // Styled to disappear into the white void rather than sit on top of it —
-    // Scene 0 has no UI. It's still the only way in, so it can't be removed,
-    // only made quiet: a faint grey word in the corner.
+    // The way in. Gold on deep blue, taken from the landing image so the
+    // button belongs to the artwork rather than sitting on top of it.
+    //
+    // ABOVE the landing screen (10000 vs 9990), and revealed only once the
+    // world is ready. It previously sat UNDER the overlay, which meant a slow
+    // load left the player with no visible way in and nothing explaining why —
+    // now the landing screen's loading line carries that, and the button
+    // arrives when there is actually something to enter.
+    const xrStyle = document.createElement("style");
+    xrStyle.textContent = `
+      #enter-xr {
+        position:fixed; left:50%; bottom:7vh; transform:translateX(-50%);
+        z-index:10000; padding:15px 52px; cursor:pointer;
+        font:400 15px/1 Georgia,"Times New Roman",serif;
+        letter-spacing:.28em; text-transform:uppercase;
+        color:#f7eeda;
+        background:linear-gradient(180deg,
+          rgba(24,48,88,.62), rgba(13,31,61,.72));
+        border:1px solid rgba(232,200,122,.7);
+        border-radius:2px;
+        box-shadow:0 0 22px rgba(232,200,122,.28),
+                   inset 0 0 18px rgba(232,200,122,.12);
+        text-shadow:0 0 14px rgba(232,200,122,.55);
+        backdrop-filter:blur(3px);
+        transition:box-shadow .35s ease, border-color .35s ease,
+                   color .35s ease, opacity .35s ease;
+      }
+      #enter-xr:hover {
+        color:#fff8e8;
+        border-color:rgba(232,200,122,1);
+        box-shadow:0 0 34px rgba(232,200,122,.5),
+                   inset 0 0 22px rgba(232,200,122,.2);
+      }
+      /* Hidden until the world is ready, then eased in. The loading line on the
+         landing screen is what speaks until then, so the player is never left
+         wondering whether anything is happening. */
+      body:not([data-world-ready]) #enter-xr {
+        opacity:0; pointer-events:none; transform:translateX(-50%) translateY(10px);
+      }
+      body[data-world-ready] #enter-xr {
+        animation:enterIn .9s ease forwards;
+      }
+      @keyframes enterIn {
+        from { opacity:0; transform:translateX(-50%) translateY(10px); }
+        to   { opacity:1; transform:translateX(-50%) translateY(0); }
+      }
+      /* Gone once the session starts; it has nothing to do in XR. */
+      body[data-in-xr] #enter-xr { display:none; }
+    `;
+    document.head.appendChild(xrStyle);
+
     const xrButton = document.createElement("button");
-    xrButton.textContent = "enter";
-    xrButton.style.cssText =
-      "position:fixed;bottom:20px;right:20px;z-index:9999;padding:8px 14px;" +
-      "font:400 13px system-ui,sans-serif;letter-spacing:.08em;color:#bbb;" +
-      "background:transparent;border:none;cursor:pointer";
+    xrButton.id = "enter-xr";
+    xrButton.textContent = "Enter";
     xrButton.addEventListener("click", () => {
       Promise.resolve(world.launchXR()).catch((err) => {
         console.error("[World] launchXR() failed:", err);
