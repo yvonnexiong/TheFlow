@@ -84,6 +84,47 @@ learning to move with it.
 What began as emptiness has become connection. What began as observation has
 become harmony.
 
+## Scene 5 — Return to Dao
+
+The player continues the gesture.
+
+The distant planet slows. The stars begin to dim. The cosmic space starts to
+dissolve.
+
+Then everything begins to break apart — not into destruction, but into drifting
+splats, ink, particles, and fragments of form.
+
+The universe fades. The mountain fades. The bamboo world fades. All the worlds
+the player has witnessed begin to disappear back into flowing ink.
+
+These splats gather in the empty space before the player. They swirl. They
+converge. They settle.
+
+And slowly, with elegance and weight, they form a single Chinese character:
+
+**道**
+
+Not as flat text, but as a living form made of ink, splats, and breath — as if
+the entire journey has returned to its source.
+
+Everything becomes still. The voice returns:
+
+> "All things flow from Dao, and return to Dao."
+
+Silence.
+
+The player understands: the worlds were never separate. Earth, forest, mountain,
+cosmos — all were expressions of the same flow. And now, all returns to one.
+
+### Meaning of the ending
+
+This final scene completes the idea that the world is born from emptiness,
+unfolds through harmony, and eventually returns to its origin.
+
+The character 道 becomes the ultimate visual summary of the whole experience. It
+is not just a symbol at the end — it is the truth that was being revealed the
+entire time.
+
 ## Ending meaning
 
 The journey is not about power. It is about attunement.
@@ -105,14 +146,22 @@ Recorded so the gap is explicit rather than discovered later.
 | Scene | Story | Build |
 |---|---|---|
 | 2 | "Raise **both** hands" | Only the RIGHT rail drives the reveal; the left is tracked but unused |
-| 3 | One **circular, continuous** gesture, repeated | Two opposed **horizontal** sweeps (right→left, left→right) |
-| 3 | Bamboo → mountain → **cosmos**, two transitions | One transition only, bamboo → mountain |
-| 4 | Circular gesture; a distant planet responds | Not built |
-| 0 | Voice line "Before all things, there was only Dao." | Not recorded; no audio |
+| 3 | One **circular, continuous** gesture, repeated | Distinct gestures per transition: a curved inward sweep, then an outward parting |
+| 4 | Circular gesture; a distant planet responds | Built as 六 resonance — 17 planets on 7 orbits, turned by the sweep gesture |
+| **5** | **Worlds dissolve into ink, gather, and settle into 道** | **Not built.** `src/returnToDao.ts` exists but is wired to nothing |
+| 0 | Voice line "Before all things, there was only Dao." | Shown as text (`introText.png`); not recorded |
+| 5 | Voice line "All things flow from Dao, and return to Dao." | Not recorded |
 | 1 | "A low sound emerges. The first wind is heard." | Ground sound plays; no wind |
 
-The circular gesture is the biggest one: it is the story's through-line for
-scenes 3 and 4 — the *same* motion carrying the player from earth to mountain to
-cosmos — whereas the current build treats scene 3's transition as a one-off
-linear sweep. Making the loop the repeating primitive is a design change, not a
-tuning change.
+Two stand out.
+
+**The circular gesture** is the story's through-line for scenes 3 onward — the
+*same* motion carrying the player from earth to mountain to cosmos. The build
+instead gives each transition its own distinct gesture. Making one repeating
+loop the primitive is a design change, not a tuning change.
+
+**Scene 5 is the ending and does not exist.** The journey currently stops at
+resonance, which is the second-to-last beat. `src/returnToDao.ts` sketches an
+approach — the character rasterised at runtime and sampled into particle
+targets, so the form is made of the same drifting stuff as the worlds that
+dissolved into it — but nothing calls it.

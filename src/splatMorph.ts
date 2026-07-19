@@ -126,6 +126,24 @@ export class SplatMorphSystem extends createSystem({}) {
    * flips its modifier index and so needs a recompile, while the incoming world
    * will already have been prewarmed in the right direction.
    */
+  /**
+   * Let go of both worlds entirely.
+   *
+   * Must be called before either splat is unloaded. update() calls
+   * updateVersion() on every attached mesh each frame, and doing that to a
+   * disposed SplatMesh is a crash — so the system has to stop holding them
+   * BEFORE the loader tears them down, not after.
+   */
+  release(): void {
+    this.sceneEntities = null;
+    this.meshes = [];
+    this.attached = false;
+    // compiledFor and prewarmQueue are deliberately KEPT. A later phase can
+    // restage onto a world that was prewarmed long ago, and clearing these
+    // would discard that work — forcing a recompile at exactly the moment the
+    // prewarm existed to protect.
+  }
+
   restage(sceneA: Entity, sceneB: Entity): void {
     this.sceneEntities = [sceneA, sceneB];
     this.meshes = [];

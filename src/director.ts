@@ -9,6 +9,7 @@ import { HandFollowCubeSystem } from "./handFollowCube.js";
 import { SplatRevealSystem } from "./splatReveal.js";
 import { SplatMorphSystem } from "./splatMorph.js";
 import { Heartbeat } from "./heartbeat.js";
+import { CosmosSystem } from "./cosmos.js";
 import { Sound } from "./audio.js";
 
 // ------------------------------------------------------------
@@ -29,7 +30,14 @@ import { Sound } from "./audio.js";
 // ever re-attaches to a second set of meshes.
 //
 // The two-splat cross-fade (SplatMorphSystem) is no longer part of the journey.
-type PhaseId = "breath" | "disc" | "reveal" | "morph" | "expand";
+type PhaseId =
+  | "breath"
+  | "disc"
+  | "reveal"
+  | "morph"
+  | "expand"
+  | "resonance"
+  | "return";
 
 /** DEV ONLY. Scene 0 is specified as pure white with no UI, which means a
  *  successful load and a hung load look identical — both are a blank white
@@ -154,21 +162,73 @@ const DISC_SOUND_VOLUME = 0.7;
  *  gap stops a hand hovering near the threshold from stuttering, and the
  *  cooldown bounds how often it can fire even when speed genuinely oscillates
  *  across the whole gap. */
-const GESTURE_SOUND_URL = "./sfx/sound_gestue_2.mp3";
+/**
+ * A distinct swish per gesture, keyed by phase.
+ *
+ * They were sharing one file: 三 had its own, and every gesture after it reused
+ * the 四 sound. Four different movements answering with the same noise makes
+ * them read as the same event repeated, which undercuts a piece whose whole
+ * shape is one gesture changing what it means.
+ */
+const GESTURE_SOUNDS: Partial<Record<PhaseId, string>> = {
+  reveal: "./sfx/sound_gestue_2.mp3",
+  morph: "./sfx/sound_gestue_5.mp3",
+  expand: "./sfx/sound_gestue_6.mp3",
+  resonance: "./sfx/sound_gestue_7.mp3",
+  return: "./sfx/sound_gestue_8.mp3",
+};
 const GESTURE_SOUND_VOLUME = 0.5;
+
+/** Speed thresholds, shared by all of them.
+ *
+ *  Taken from what tracked hands actually do: at rest they jitter at 0.05-0.15
+ *  m/s, casual repositioning is 0.3-0.5, and a deliberate sweep is 1-2. Firing
+ *  at 0.9 sits clear of the first two.
+ *
+ *  Two separate guards, because they catch different failures: the hysteresis
+ *  gap stops a hand hovering near the threshold from stuttering, and the
+ *  cooldown bounds how often it can fire even when speed genuinely oscillates
+ *  across the whole gap. */
 const GESTURE_SPEED_ON = 0.9; // m/s — fire above this
 const GESTURE_SPEED_OFF = 0.4; // m/s — re-arm below this
 const GESTURE_COOLDOWN = 0.4; // seconds, minimum between triggers
-
-/** 四 morph — its own swish, same speed-triggered principle as 三. */
-const MORPH_GESTURE_SOUND_URL = "./sfx/sound_gestue_5.mp3";
-const MORPH_GESTURE_SOUND_VOLUME = 0.5;
 
 /** 四 morph — the world the reveal transitions INTO. */
 const MORPH_SPLAT = "Scene2/newMoutains.spz";
 
 /** 五 expand — the world the mountains transition into in turn. */
 const EXPAND_SPLAT = "Scene3/Celestial Pathways Amidst Clouds.spz";
+
+/** Scene 5 返 — the world the celestial one returns into.
+ *
+ *  SPZ v3, which this Spark build accepts — its loader allows 1 through 3. The
+ *  warning in CLAUDE.md is about SPZ 4 specifically, which SuperSplat writes
+ *  and which hangs the loader with no error.
+ *
+ *  Everything downstream is guarded on this being set, so blanking it makes the
+ *  phase hold on the previous world with the rails present rather than
+ *  erroring or dissolving into nothing. */
+const RETURN_SPLAT = "dao.spz";
+
+/** Where 道 stands, relative to the player.
+ *
+ *  Pushed forward so the character is something they face rather than something
+ *  they are standing inside, and RAISED to meet them: the capture sits on its
+ *  own ground plane, which puts it at the player's feet. The journey ends by
+ *  looking at 道, not down at it. */
+const RETURN_SPLAT_Z = -2.2;
+const RETURN_SPLAT_Y = 1.5;
+
+/** Seconds the cosmos takes to dissolve once the final gesture has flared. The
+ *  stars dim as the journey ends rather than being switched off. */
+const COSMOS_FADE_SECONDS = 3.5;
+
+/** Scene 5's music. Looping ambience under the return, faded in rather than
+ *  cut in — arriving at full volume would announce itself as a cue instead of
+ *  as something that was always there. */
+const RETURN_MUSIC_URL = "./sfx/sound_gestue_1_last_scene.mp3";
+const RETURN_MUSIC_VOLUME = 0.45;
+const RETURN_MUSIC_FADE_IN = 3.0;
 
 /** Handoff from 三 to 四, in seconds. The markers glow where the player left
  *  them, vanish, and return laid out for the next gesture — so the change of
@@ -245,7 +305,7 @@ const HEAD_MAX_DECAY = 0.09;
 /** DEV ONLY. A small readout floating in front of the player, showing the
  *  numbers that are otherwise only visible in a browser console — which a
  *  headset does not have. Set false for the real experience. */
-const DEBUG_HUD = true;
+const DEBUG_HUD = false;
 
 /** DEV ONLY. Start the journey at this phase instead of the beginning, so a
  *  scene can be checked without walking the whole sequence. null = normal. */
@@ -261,7 +321,7 @@ const INTRO_TEXT_WIDTH = 1.3; // metres — ~50 degrees across at INTRO_TEXT_DIS
  *  player is. Positioned once, when it fades in — it does not follow, so
  *  turning away leaves it behind rather than dragging it around. */
 const INTRO_TEXT_DIST = 1.4; // metres ahead
-const INTRO_TEXT_EYE_DROP = 0.06; // slightly below eye line, where reading sits
+const INTRO_TEXT_EYE_DROP = 0.29; // well below the eye line, a comfortable read
 
 /** The opening beats, in seconds. Text first and alone; only once it has
  *  settled do the heartbeat and the ring arrive — so the line is read in
@@ -298,7 +358,15 @@ const REVEAL_SPLAT_YAW = Math.PI / 2;
 const REVEAL_SPLAT_Y = -0.3;
 
 export class DirectorSystem extends createSystem({}) {
-  private readonly phases: PhaseId[] = ["breath", "disc", "reveal", "morph", "expand"];
+  private readonly phases: PhaseId[] = [
+    "breath",
+    "disc",
+    "reveal",
+    "morph",
+    "expand",
+    "resonance",
+    "return",
+  ];
   private index = 0;
   private started = false;
   private loaded = false;
@@ -327,6 +395,10 @@ export class DirectorSystem extends createSystem({}) {
   private handoffTimer = 0;
   private morphEntity: Entity | null = null;
   private expandEntity: Entity | null = null;
+  private returnEntity: Entity | null = null;
+  private laterWorldsQueued = false;
+  private cosmosFading = false;
+  private cosmosFadeTimer = 0;
 
   private circle!: THREE.Mesh;
   private circleMat!: THREE.MeshBasicMaterial;
@@ -338,22 +410,20 @@ export class DirectorSystem extends createSystem({}) {
   private domOverlay: HTMLElement | null = null;
   private readonly heartbeat = new Heartbeat();
   private readonly groundSound = new Sound(DISC_SOUND_URL, DISC_SOUND_VOLUME);
-  private readonly gestureSound = new Sound(
-    GESTURE_SOUND_URL,
-    GESTURE_SOUND_VOLUME,
+  private readonly returnMusic = new Sound(
+    RETURN_MUSIC_URL,
+    RETURN_MUSIC_VOLUME,
+    true, // loops until the piece ends
   );
-  private readonly morphGestureSound = new Sound(
-    MORPH_GESTURE_SOUND_URL,
-    MORPH_GESTURE_SOUND_VOLUME,
-  );
-  /** Rising-edge state per gesture sound. False while speed is above the
-   *  re-arm threshold, which prevents one continuous fast movement from
-   *  retriggering every frame. Kept separate per phase so crossing into 四
-   *  starts fresh rather than inheriting 三's armed state. */
-  private readonly gestureState = {
-    reveal: { armed: true, cooldown: 0 },
-    morph: { armed: true, cooldown: 0 },
-  };
+  /** One Sound and one rising-edge state per gesture, built from
+   *  GESTURE_SOUNDS. Kept separate per phase so crossing into the next gesture
+   *  starts fresh rather than inheriting the last one's armed state. */
+  private readonly gestureSounds = new Map<PhaseId, Sound>();
+  private readonly gestureState = new Map<
+    PhaseId,
+    { armed: boolean; cooldown: number }
+  >();
+
 
   private revealEntity: Entity | null = null;
 
@@ -412,17 +482,26 @@ export class DirectorSystem extends createSystem({}) {
     if (!this.started) {
       this.started = true;
       this.enterPhase(0);
+      // ONLY the bamboo here. The white gate waits on it, and fetching all
+      // four worlds at once means ~90MB competing for the same wireless link —
+      // so the one world that blocks the start arrives last. The rest are
+      // kicked off once the gate lifts, and have the whole of scenes 0 to 2 to
+      // arrive before anything needs them.
       this.preloadReveal();
-      this.preloadMorph();
-      this.preloadExpand();
       void this.heartbeat.load(); // decode during the load gate
       void this.groundSound.load();
-      void this.gestureSound.load();
-      void this.morphGestureSound.load();
+      void this.returnMusic.load();
+      for (const [phase, url] of Object.entries(GESTURE_SOUNDS)) {
+        const sound = new Sound(url, GESTURE_SOUND_VOLUME);
+        this.gestureSounds.set(phase as PhaseId, sound);
+        this.gestureState.set(phase as PhaseId, { armed: true, cooldown: 0 });
+        void sound.load();
+      }
     }
 
     if (this.world.session) this.trackFloor(delta);
     this.updateIntroFadeOut(delta);
+    this.updateCosmosFade(delta);
     if (DEBUG_HUD && this.world.session) this.updateHud(delta);
 
     const phase = this.phases[this.index];
@@ -437,6 +516,42 @@ export class DirectorSystem extends createSystem({}) {
       return;
     }
 
+    if (phase === "return") {
+      // 返 — the same outward parting as 五, carrying the celestial world into
+      // whatever it returns to. Identical mechanism, restaged onto the last
+      // pair; holds harmlessly if RETURN_SPLAT has not been set.
+      const rails = this.world.getSystem(HandFollowCubeSystem);
+      const morph = this.world.getSystem(SplatMorphSystem);
+      if (!rails || !morph || !this.returnEntity) return;
+
+      morph.setPhase(rails.bothProgress);
+      this.updateGestureSound("return", rails.rightHandSpeed, delta);
+
+      if (morph.isReady && this.returnEntity.object3D?.visible === false) {
+        this.returnEntity.object3D.visible = true;
+        console.log("[Director] return attached — final world armed");
+      }
+
+      // The last gesture flares like the others, then the markers leave and do
+      // not come back: advance() stops at the final phase, so nothing rebuilds
+      // them. What remains is 道 and stillness.
+      this.updateHandoff(rails.bothProgress >= GESTURE_COMPLETE_AT, delta, rails);
+      return;
+    }
+
+    if (phase === "resonance") {
+      // 万物 — the same curved gesture as 四, but nothing transitions now. It
+      // turns the orbital system instead: the planets answer the movement
+      // rather than being carried by it.
+      const rails = this.world.getSystem(HandFollowCubeSystem);
+      const cosmos = this.world.getSystem(CosmosSystem);
+      if (!rails) return;
+      cosmos?.setProgress(rails.bothProgress);
+      this.updateGestureSound("resonance", rails.rightHandSpeed, delta);
+      this.updateHandoff(rails.bothProgress >= GESTURE_COMPLETE_AT, delta, rails);
+      return;
+    }
+
     if (phase === "expand") {
       // 五 — the hands part outward, carrying the mountains into the celestial
       // world. Same mechanism as 四, restaged onto the next pair.
@@ -445,12 +560,14 @@ export class DirectorSystem extends createSystem({}) {
       if (!rails || !morph) return;
 
       morph.setPhase(rails.bothProgress);
-      this.updateGestureSound("morph", rails.rightHandSpeed, delta);
+      this.updateGestureSound("expand", rails.rightHandSpeed, delta);
 
       if (morph.isReady && this.expandEntity?.object3D?.visible === false) {
         this.expandEntity.object3D.visible = true;
         console.log("[Director] expand attached — celestial armed");
       }
+
+      this.updateHandoff(rails.bothProgress >= GESTURE_COMPLETE_AT, delta, rails);
       return;
     }
 
@@ -528,6 +645,12 @@ export class DirectorSystem extends createSystem({}) {
       this.handoff = "glowing";
       this.handoffTimer = 0;
       cube.setGlow(0);
+
+      // The cosmos begins dissolving on the flare that ends 六, not later: the
+      // planets slowing and the stars dimming is the RESPONSE to the gesture
+      // completing, so it has to start on the same beat rather than after the
+      // markers have already gone.
+      if (this.phases[this.index] === "resonance") this.cosmosFading = true;
       console.log(`[Director] ${this.phases[this.index]} complete — markers flare`);
       return;
     }
@@ -554,6 +677,9 @@ export class DirectorSystem extends createSystem({}) {
 
     if (this.handoff === "hidden" && this.handoffTimer >= HANDLES_GONE_SECONDS) {
       this.handoff = "done";
+      // Safety net for the final gesture: if the sky somehow survived 六, it
+      // does not outlive the journey. A no-op once the fade has already run.
+      if (this.phases[this.index] === "return") this.cosmosFading = true;
       this.advance();
     }
   }
@@ -564,13 +690,10 @@ export class DirectorSystem extends createSystem({}) {
    * Rising-edge rather than level-triggered: a level test would retrigger every
    * frame the hand stays fast, which at 72Hz is a machine gun.
    */
-  private updateGestureSound(
-    which: "reveal" | "morph",
-    speed: number,
-    delta: number,
-  ) {
-    const state = this.gestureState[which];
-    const sound = which === "reveal" ? this.gestureSound : this.morphGestureSound;
+  private updateGestureSound(which: PhaseId, speed: number, delta: number) {
+    const state = this.gestureState.get(which);
+    const sound = this.gestureSounds.get(which);
+    if (!state || !sound) return;
 
     state.cooldown = Math.max(0, state.cooldown - delta);
 
@@ -584,6 +707,7 @@ export class DirectorSystem extends createSystem({}) {
       state.armed = true;
     }
   }
+
 
   /** Scene 1 — grow the disc from nothing to DISC_RADIUS under the player. */
   private updateDisc(delta: number) {
@@ -612,6 +736,16 @@ export class DirectorSystem extends createSystem({}) {
       if (!reveal?.isReady) return;
       this.loaded = true;
       console.log("[Director] world ready — white lifted, waiting for XR");
+
+      // The later worlds start now, in the background. Nothing needs them for
+      // minutes, and by staggering them the player is not kept waiting on
+      // downloads for scenes they have not reached.
+      if (!this.laterWorldsQueued) {
+        this.laterWorldsQueued = true;
+        this.preloadMorph();
+        this.preloadExpand();
+        this.preloadReturn();
+      }
       // The overlay must come down even outside XR: it sits above the "enter"
       // button, so leaving it up would make entering the session impossible.
       this.setLoadingVisible(false);
@@ -741,6 +875,27 @@ export class DirectorSystem extends createSystem({}) {
     // Compile its morph shader now rather than at the transition — see
     // SplatMorphSystem.prewarm().
     this.world.getSystem(SplatMorphSystem)?.prewarm(this.morphEntity);
+  }
+
+  /** Same again for 返, if its splat has been chosen yet. */
+  private preloadReturn() {
+    if (!RETURN_SPLAT) {
+      console.log("[Director] RETURN_SPLAT not set — 返 will hold");
+      return;
+    }
+    this.returnEntity = this.world.createTransformEntity();
+    if (this.returnEntity.object3D) {
+      this.returnEntity.object3D.visible = false;
+      this.returnEntity.object3D.position.y = this.floorOffset;
+    }
+    if (this.returnEntity.object3D) {
+      this.returnEntity.object3D.position.z = RETURN_SPLAT_Z;
+    }
+    this.returnEntity.addComponent(GaussianSplatLoader, {
+      splatUrl: splatPath(RETURN_SPLAT),
+      animate: false,
+    });
+    this.world.getSystem(SplatMorphSystem)?.prewarm(this.returnEntity);
   }
 
   /** Same as preloadMorph, for the world 五 transitions into. */
@@ -1000,6 +1155,20 @@ export class DirectorSystem extends createSystem({}) {
     this.introText.rotation.y = Math.atan2(-dir.x, -dir.z);
   }
 
+  /** Dissolve the cosmos after the final gesture. */
+  private updateCosmosFade(delta: number) {
+    if (!this.cosmosFading) return;
+
+    this.cosmosFadeTimer += delta;
+    const t = Math.min(1, this.cosmosFadeTimer / COSMOS_FADE_SECONDS);
+    this.world.getSystem(CosmosSystem)?.setFade(1 - t);
+
+    if (t >= 1) {
+      this.cosmosFading = false;
+      console.log("[Director] cosmos gone — only 道 remains");
+    }
+  }
+
   /** Fade the line away once the player has stepped in. Driven from update()
    *  rather than updateBreath, so it keeps fading after the phase has moved on
    *  — otherwise it would freeze at whatever opacity it had reached. */
@@ -1189,7 +1358,28 @@ export class DirectorSystem extends createSystem({}) {
     }
     if (this.morphEntity?.object3D) this.morphEntity.object3D.position.y = y;
     if (this.expandEntity?.object3D) this.expandEntity.object3D.position.y = y;
+    if (this.returnEntity?.object3D) {
+      this.returnEntity.object3D.position.y = y + RETURN_SPLAT_Y;
+    }
     this.world.getSystem(HandFollowCubeSystem)?.setFloorOffset(y);
+  }
+
+  /**
+   * Drop a world we have finished with.
+   *
+   * Three splat worlds resident at once is 87MB of GPU memory plus three sorted
+   * point clouds — survivable on desktop, a real risk of running out on a
+   * standalone headset. A cross-dissolve genuinely needs two present, but never
+   * three: as soon as a transition completes, the world it came FROM can go.
+   */
+  private unloadWorld(entity: Entity | null, label: string) {
+    if (!entity) return;
+    const loader = this.world.getSystem(GaussianSplatLoaderSystem);
+    if (!loader) return;
+    loader
+      .unload(entity, { animate: false })
+      .then(() => console.log(`[Director] unloaded ${label}`))
+      .catch((err) => console.warn(`[Director] unload ${label} failed`, err));
   }
 
   /** Set the scene backdrop, reusing the existing Color so nothing allocates
@@ -1210,8 +1400,15 @@ export class DirectorSystem extends createSystem({}) {
   }
 
   private advance() {
+    // At the end there is nowhere to go. Clamping the index and re-entering the
+    // final phase would rebuild its rails and hand the player controls back for
+    // a journey that has finished — so stop instead.
+    if (this.index >= this.phases.length - 1) {
+      console.log("[Director] journey complete — controls away, stillness");
+      return;
+    }
     this.exitPhase(this.phases[this.index]);
-    this.index = Math.min(this.index + 1, this.phases.length - 1);
+    this.index += 1;
     this.dwell = 0;
     this.enterPhase(this.index);
   }
@@ -1249,10 +1446,69 @@ export class DirectorSystem extends createSystem({}) {
       this.discElapsed = 0;
       this.discGrown = false;
       void this.groundSound.play();
+    } else if (phase === "return") {
+      // Music comes up as the last scene opens and stays under everything that
+      // follows — the flare, the sky dissolving, the stillness at the end.
+      void this.returnMusic.play(RETURN_MUSIC_FADE_IN);
+
+      // The celestial world becomes the one being left; the final world
+      // arrives. Same restage as before — the modifier, the phase uniform and
+      // the prewarm all already exist.
+      if (this.expandEntity && this.returnEntity) {
+        this.world
+          .getSystem(SplatMorphSystem)
+          ?.restage(this.expandEntity, this.returnEntity);
+      } else {
+        console.warn("[Director] 返 without a second world — holding");
+      }
+
+      // Same layout as 五: hands parting outward from the midline.
+      if (cube) {
+        cube.configureForExpand();
+        cube.placeInFrontOf(this.world.camera);
+        cube.setFollowHead(true);
+        cube.setVisible(true);
+      }
+    } else if (phase === "resonance") {
+      // Nothing transitions from here on, so the morph system can let go of
+      // both worlds — and it MUST, before the mountains are unloaded: it calls
+      // updateVersion() on every attached mesh each frame, and doing that to a
+      // disposed SplatMesh is a crash.
+      this.world.getSystem(SplatMorphSystem)?.release();
+      this.unloadWorld(this.morphEntity, "mountains");
+      this.morphEntity = null;
+
+      // Rails FIRST, cosmos second. The gesture is the scene; the sky is what
+      // answers it. If building the sky ever fails, the player should still
+      // have something in their hands rather than an empty world.
+      //
+      // The layout is deliberately the SAME as 四 — the curved inward sweep.
+      // The story turns on the gesture not changing while what responds to it
+      // does.
+      if (cube) {
+        cube.configureForMorph();
+        cube.placeInFrontOf(this.world.camera);
+        cube.setFollowHead(true);
+        cube.setVisible(true);
+      }
+
+      const cosmos = this.world.getSystem(CosmosSystem);
+      if (!cosmos) {
+        console.error("[Director] CosmosSystem NOT REGISTERED — no sky");
+      } else {
+        cosmos.setVisible(true);
+        console.log("[Director] resonance — rails back, cosmos shown");
+      }
     } else if (phase === "expand") {
       // The mountains become the world being left behind; the celestial world
       // is the one arriving. Restage rather than construct a second system —
       // the modifier, the phase uniform and the prewarm all already exist.
+      // The bamboo is done with: the first transition has completed, and this
+      // one runs mountains -> celestial. restage() has already stopped the
+      // morph system referencing it, so it is safe to tear down.
+      this.unloadWorld(this.revealEntity, "bamboo");
+      this.revealEntity = null;
+
       if (this.morphEntity && this.expandEntity) {
         this.world
           .getSystem(SplatMorphSystem)

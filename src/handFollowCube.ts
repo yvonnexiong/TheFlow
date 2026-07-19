@@ -28,7 +28,11 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 // it moves by however far the fingertip moved. Grabbing therefore never jumps
 // the gesture, wherever the player happened to reach in.
 
-const TRACK_Z = -0.42; // within arm's reach, so the markers can be touched
+// Far enough to sit inside the headset's RECORDING frame, which is narrower
+// and from a different viewpoint than the eyes — at 0.42m the markers were
+// visible to the player but cropped out of captures. Still comfortably within
+// reach.
+const TRACK_Z = -0.72;
 
 /** Lateral offset of each VERTICAL rail from centre — roughly shoulder width,
  *  so each falls under its own hand without the two crowding each other. */
@@ -53,8 +57,8 @@ const TRACK_TOP = 1.55;
 // hands are clear of each other vertically.
 const SWEEP_OUTER = 0.34; // where each hand starts, left/right of centre
 const SWEEP_INNER = 0.04; // where it stops — just short of the midline
-const SWEEP_Y_RIGHT = 1.32; // right hand's line, the higher one
-const SWEEP_Y_LEFT = 1.1; // left hand's line, a little lower
+const SWEEP_Y_RIGHT = 1.42; // right hand's line, the higher one
+const SWEEP_Y_LEFT = 1.2; // left hand's line, a little lower
 
 /** How far each sweep bows away from the straight line between its ends.
  *  Right arcs UP, left arcs DOWN — opposed curves, so the two hands trace the
@@ -69,13 +73,13 @@ const SWEEP_ARC = 0.13;
 // converged; here they only ever separate, so there is nothing to avoid and one
 // shared line reads as a single opening rather than two parallel moves.
 const EXPAND_INNER = 0.1; // where each hand starts, either side of centre
-const EXPAND_OUTER = 0.6; // where it ends, out near the limit of easy reach
+const EXPAND_OUTER = 0.5; // where it ends — wide, but short of full reach
 
 /** Both hands travel on ONE level here, unlike the sweep's staggered lines.
  *  They start already apart and move further apart, so they never approach each
  *  other — the vertical stagger that kept them from crossing has no work to do,
  *  and a single line reads as one opening gesture rather than two. */
-const EXPAND_Y = 1.22;
+const EXPAND_Y = 1.32;
 
 const MARKER_SIZE = 0.14;
 
@@ -83,14 +87,24 @@ const MARKER_SIZE = 0.14;
  *  punctuation on the line rather than as another thing to grab. */
 const CAP_RADIUS = 0.011;
 
-/** How close the fingertip must be to a marker's centre to grab it (metres).
- *  Generous relative to the 0.14m sphere — hand tracking is noisy, and a miss
- *  that silently does nothing is more frustrating than an early catch. */
-const TOUCH_RADIUS = 0.14;
+/**
+ * How close the fingertip must be to a marker's centre to grab it (metres).
+ *
+ * Deliberately much larger than the 0.14m sphere it surrounds — this is a
+ * trigger volume, not the object. Hand tracking is noisy, the markers sit at
+ * arm's length, and a miss that silently does nothing is far more frustrating
+ * than an early catch. The player should be able to reach toward a marker and
+ * have it respond, rather than having to land on it.
+ *
+ * Cross-talk is not a concern even though this exceeds the gap between the two
+ * rails: each hand only ever drives its own marker, so a left hand inside the
+ * right marker's radius does nothing.
+ */
+const TOUCH_RADIUS = 0.26;
 
 /** Once held, the finger may stray this far before the marker is released.
  *  Larger than TOUCH_RADIUS so brief jitter doesn't drop it mid-gesture. */
-const RELEASE_RADIUS = 0.26;
+const RELEASE_RADIUS = 0.44;
 
 // Fingertip, not wrist: the gesture is touching a specific object, and the
 // wrist sits ~15cm behind where the player believes their hand is — enough to

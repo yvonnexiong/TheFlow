@@ -55,10 +55,13 @@ export async function resumeAudio(): Promise<boolean> {
 export class Sound {
   private buffer: AudioBuffer | null = null;
   private loading: Promise<void> | null = null;
+  private playing: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
 
   constructor(
     private readonly url: string,
     private readonly volume = 1,
+    /** Loop forever until stopped. For ambience rather than punctuation. */
+    private readonly loop = false,
   ) {}
 
   /** Fetch + decode ahead of time. Safe to call repeatedly. */
@@ -82,25 +85,57 @@ export class Sound {
     return this.loading;
   }
 
-  /** Play once, now. No-op if the sample never loaded. */
-  async play(): Promise<void> {
+  /**
+   * Play now. No-op if the sample never loaded.
+   *
+   * `fadeIn` ramps up over that many seconds — worth using on looping ambience,
+   * which arriving at full volume announces itself as a cue rather than as
+   * something that was always there.
+   */
+  async play(fadeIn = 0): Promise<void> {
     await this.load();
     if (!this.buffer) return;
     if (!(await resumeAudio())) return;
 
     const c = getAudioContext();
     const gain = c.createGain();
-    gain.gain.value = this.volume;
     gain.connect(c.destination);
+
+    if (fadeIn > 0) {
+      gain.gain.setValueAtTime(0.0001, c.currentTime);
+      gain.gain.linearRampToValueAtTime(this.volume, c.currentTime + fadeIn);
+    } else {
+      gain.gain.value = this.volume;
+    }
 
     const src = c.createBufferSource();
     src.buffer = this.buffer;
+    src.loop = this.loop;
     src.connect(gain);
     src.start();
-    // Let the graph collect itself once the tail has finished.
-    src.onended = () => {
-      src.disconnect();
-      gain.disconnect();
-    };
+
+    if (this.loop) {
+      // Held so it can be stopped later; a looping source never ends on its own.
+      this.playing = { src, gain };
+    } else {
+      // Let the graph collect itself once the tail has finished.
+      src.onended = () => {
+        src.disconnect();
+        gain.disconnect();
+      };
+    }
+  }
+
+  /** Fade out and stop a looping sound. No-op for one-shots. */
+  stop(seconds = 2): void {
+    if (!this.playing) return;
+    const { src, gain } = this.playing;
+    this.playing = null;
+
+    const now = getAudioContext().currentTime;
+    gain.gain.cancelScheduledValues(now);
+    gain.gain.setValueAtTime(gain.gain.value, now);
+    gain.gain.linearRampToValueAtTime(0.0001, now + seconds);
+    src.stop(now + seconds + 0.05);
   }
 }
