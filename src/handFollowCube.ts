@@ -12,10 +12,13 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 // Rails are RECONFIGURABLE, because the two gestures differ:
 //   三 reveal — both VERTICAL, side by side. Lifting draws the world upward.
 //               Only the right rail's progress drives the reveal.
-//   四 morph  — both HORIZONTAL and opposed, sweeping INWARD to meet at the
-//               midline: the right travels right-to-centre, the left
-//               left-to-centre a little lower. The two are averaged, so the
-//               transition needs both hands.
+//   四 morph  — both sweeping INWARD to meet at the midline, along opposed
+//               ARCS: the right bows up and settles, the left bows down and
+//               rises, so the pair traces the halves of a taiji. The two are
+//               averaged, so the transition needs both hands.
+//   五 expand — the hands part again, travelling OUTWARD from just past where
+//               they met, on lines offset from the previous ones so the new
+//               gesture is visibly not a continuation of the old.
 //
 // Progress always runs 0 -> 1 along whatever the rail's own travel is, so a
 // consumer never needs to know which way a hand is physically moving.
@@ -53,7 +56,29 @@ const SWEEP_INNER = 0.04; // where it stops — just short of the midline
 const SWEEP_Y_RIGHT = 1.32; // right hand's line, the higher one
 const SWEEP_Y_LEFT = 1.1; // left hand's line, a little lower
 
+/** How far each sweep bows away from the straight line between its ends.
+ *  Right arcs UP, left arcs DOWN — opposed curves, so the two hands trace the
+ *  halves of a taiji rather than two parallel wipes. Endpoints are unaffected:
+ *  the bow is a sine that is zero at both ends. */
+const SWEEP_ARC = 0.13;
+
+// 五 expand: the hands part again, travelling OUTWARD from where they met.
+//
+// Each starts offset from where the previous gesture ended — the right a
+// little lower and further right, the left a little higher and further left —
+// so the new rails are visibly not the old ones, and the hands are already
+// past each other before they begin. Picking up exactly where they stopped
+// would read as the same gesture continuing.
+const EXPAND_INNER = 0.1; // where each hand starts, either side of centre
+const EXPAND_OUTER = 0.42; // where it ends, out at the edge of reach
+const EXPAND_Y_RIGHT = 1.2; // lower than the sweep's right line (1.32)
+const EXPAND_Y_LEFT = 1.22; // higher than the sweep's left line (1.10)
+
 const MARKER_SIZE = 0.14;
+
+/** Radius of the dots marking each end of a rail. Small enough to read as
+ *  punctuation on the line rather than as another thing to grab. */
+const CAP_RADIUS = 0.011;
 
 /** How close the fingertip must be to a marker's centre to grab it (metres).
  *  Generous relative to the 0.14m sphere — hand tracking is noisy, and a miss
@@ -74,27 +99,88 @@ const JOINT: XRHandJoint = "index-finger-tip";
  *  wildly; averaging over ~3 frames removes that without noticeable lag. */
 const SPEED_SMOOTHING = 0.35;
 
-/** The marker mesh — a yin-yang sphere, 1m across, sitting ON its own origin
- *  (centre at y=0.499) rather than centred on it. */
-const MARKER_URL = "./glbs/yin-yang+sphere+3d+model.glb";
+/** How fast the rails chase the player's head when following, per second.
+ *  Loose enough that turning your head does not drag them rigidly with you,
+ *  tight enough that they are always within reach. */
+const FOLLOW_RATE = 3.0;
+
+/** Below this, the rails are already where they should be — stops them
+ *  creeping forever on floating-point residue. */
+const FOLLOW_EPSILON = 0.005;
+
+/** The marker meshes — yin-yang spheres, 1m across, sitting ON their own
+ *  origin (centre at y=0.499) rather than centred on it. A different model per
+ *  hand; both share the same geometry and fitting. */
+const MARKER_URL = {
+  left: "./glbs/yin-yang+sphere+3d+model_white.glb",
+  right: "./glbs/yin-yang+sphere+3d+model_black.glb",
+} as const;
 const MARKER_SOURCE_DIAMETER = 0.998;
 const MARKER_CENTRE_Y = 0.499;
 
-/** Per-hand tint. The texture is multiplied by `color`, so darkening is direct
- *  but lightening is not — the light side lifts with emissive instead, which
- *  washes it toward white without flattening the pattern.
+/** Per-hand tint — now NEUTRAL, because the light/dark distinction lives in the
+ *  models themselves rather than being faked in the material.
  *
- *  The dark side is only moderately dark: below about 0x50 the multiply eats
- *  the yin-yang pattern entirely and it reads as a flat black dot at 14cm. */
+ *  The previous values multiplied one texture down and lifted the other with
+ *  emissive to manufacture the contrast. Applying that on top of models that
+ *  are already white and black would double it: the white one would blow out
+ *  and the black one would crush to a featureless dot.
+ *
+ *  Kept as a structure rather than deleted, since the held and glow states
+ *  still return to these as their resting values. */
 const TINT = {
-  left: { color: 0xffffff, emissive: 0x9a9a9a },
-  right: { color: 0x8f8f8f, emissive: 0x141414 },
+  left: { color: 0xffffff, emissive: 0x000000 },
+  right: { color: 0xffffff, emissive: 0x000000 },
 } as const;
 
 /** Emissive while held, so contact reads on both tints. */
 const HELD_EMISSIVE = 0x66ccff;
 /** Emissive while glowing — the beat after a gesture completes. */
 const GLOW_EMISSIVE = 0xffffff;
+
+/** Halo colour, matching the seed circle's — warm white rather than a
+ *  saturated yellow, because on a white void it tints rather than adds. */
+const GLOW_COLOR = 0xffe9a8;
+/** Halo size as a multiple of the marker. */
+const GLOW_SCALE = 3.4;
+
+/**
+ * Soft radial falloff, drawn once into a texture.
+ *
+ * A sprite rather than a shaded quad here: sprites always face the camera, and
+ * the markers are spheres seen from any angle — a flat quad would show itself
+ * edge-on the moment the player moved. Shared by both rails; a texture has no
+ * per-instance state.
+ */
+let glowTexture: THREE.Texture | null = null;
+function getGlowTexture(): THREE.Texture {
+  if (glowTexture) return glowTexture;
+
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+
+  const g = ctx.createRadialGradient(
+    size / 2,
+    size / 2,
+    0,
+    size / 2,
+    size / 2,
+    size / 2,
+  );
+  // Squared falloff, same reasoning as the seed circle's halo: linear reads as
+  // a flat disc, this keeps a tight core with a long tail.
+  for (let i = 0; i <= 8; i++) {
+    const t = i / 8;
+    g.addColorStop(t, `rgba(255,255,255,${Math.pow(1 - t, 2).toFixed(3)})`);
+  }
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+
+  glowTexture = new THREE.CanvasTexture(canvas);
+  return glowTexture;
+}
 
 type Handedness = "left" | "right";
 
@@ -107,9 +193,13 @@ type RailConfig = {
   from: number;
   /** Position at progress 1. */
   to: number;
-  /** The fixed coordinate on the other axis: x for a vertical rail, y for a
-   *  horizontal one. */
+  /** The coordinate on the other axis AT BOTH ENDS: x for a vertical rail, y
+   *  for a horizontal one. */
   cross: number;
+  /** Bow away from `cross` at the midpoint, as a signed distance. Positive
+   *  bows toward +cross-axis. Zero (the default) gives a straight rail. The
+   *  profile is a half sine, so both endpoints stay exactly on `cross`. */
+  arc?: number;
 };
 
 /**
@@ -131,7 +221,8 @@ class Rail {
   private materials: THREE.MeshStandardMaterial[] = [];
   private held = false;
   private prevTip: number | null = null;
-  private glowing = false;
+  private glow = 0;
+  private halo!: THREE.Sprite;
   private cfg: RailConfig | null = null;
   private readonly markerWorld = new THREE.Vector3();
 
@@ -144,14 +235,30 @@ class Rail {
     );
     this.group.add(this.bar);
 
+    // Dots, not bars: the ends are terminals, and a crossbar reads as a second
+    // rail crossing the first. A sphere also stays the same shape whichever way
+    // the rail runs, so it needs no per-orientation scaling.
     for (let i = 0; i < 2; i++) {
       const cap = new THREE.Mesh(
-        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.SphereGeometry(CAP_RADIUS, 16, 12),
         new THREE.MeshBasicMaterial({ color: 0x334455 }),
       );
       this.caps.push(cap);
       this.group.add(cap);
     }
+
+    this.halo = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: getGlowTexture(),
+        color: GLOW_COLOR,
+        transparent: true,
+        depthWrite: false,
+        opacity: 0,
+      }),
+    );
+    this.halo.scale.setScalar(MARKER_SIZE * GLOW_SCALE);
+    this.halo.visible = false;
+    this.marker.add(this.halo);
 
     this.group.add(this.marker);
   }
@@ -159,31 +266,67 @@ class Rail {
   /** Lay the rail out for a gesture, and park the marker at progress 0. */
   configure(cfg: RailConfig): void {
     this.cfg = cfg;
-    const mid = (cfg.from + cfg.to) / 2;
-    const span = Math.abs(cfg.to - cfg.from);
 
-    if (cfg.axis === "y") {
-      this.bar.scale.set(0.004, span, 0.004);
-      this.bar.position.set(cfg.cross, mid, TRACK_Z);
-      this.caps.forEach((cap, i) => {
-        cap.scale.set(0.06, 0.006, 0.006);
-        cap.position.set(cfg.cross, i === 0 ? cfg.from : cfg.to, TRACK_Z);
-      });
-      this.marker.position.set(cfg.cross, cfg.from, TRACK_Z);
-    } else {
-      this.bar.scale.set(span, 0.004, 0.004);
-      this.bar.position.set(mid, cfg.cross, TRACK_Z);
-      this.caps.forEach((cap, i) => {
-        cap.scale.set(0.006, 0.06, 0.006);
-        cap.position.set(i === 0 ? cfg.from : cfg.to, cfg.cross, TRACK_Z);
-      });
-      this.marker.position.set(cfg.from, cfg.cross, TRACK_Z);
-    }
+    // Rebuild the bar along the path. Straight rails could reuse a scaled box,
+    // but a bowed one cannot — and configure() runs twice a session, so the
+    // rebuild costs nothing worth optimising away.
+    this.bar.geometry.dispose();
+    this.bar.geometry = this.buildBarGeometry(cfg);
+    this.bar.position.set(0, 0, 0);
+    this.bar.scale.set(1, 1, 1);
 
+    this.caps.forEach((cap, i) => {
+      cap.position.copy(this.pointAt(cfg, i === 0 ? 0 : 1));
+    });
+
+    this.marker.position.copy(this.pointAt(cfg, 0));
     this.release();
   }
 
+  /**
+   * Position along the rail at t = 0..1.
+   *
+   * The primary axis interpolates linearly between the endpoints; the other
+   * bows away from `cross` by a half sine, which is exactly zero at t=0 and
+   * t=1 — so adding an arc never moves where the gesture starts or ends.
+   */
+  private pointAt(cfg: RailConfig, t: number): THREE.Vector3 {
+    const along = cfg.from + (cfg.to - cfg.from) * t;
+    const bow = cfg.cross + (cfg.arc ?? 0) * Math.sin(Math.PI * t);
+    return cfg.axis === "y"
+      ? new THREE.Vector3(bow, along, TRACK_Z)
+      : new THREE.Vector3(along, bow, TRACK_Z);
+  }
+
+  /** A thin tube following the path, or a plain box when it is straight. */
+  private buildBarGeometry(cfg: RailConfig): THREE.BufferGeometry {
+    if (!cfg.arc) {
+      const span = Math.abs(cfg.to - cfg.from);
+      const box =
+        cfg.axis === "y"
+          ? new THREE.BoxGeometry(0.004, span, 0.004)
+          : new THREE.BoxGeometry(span, 0.004, 0.004);
+      const mid = this.pointAt(cfg, 0.5);
+      box.translate(mid.x, mid.y, mid.z);
+      return box;
+    }
+
+    const samples: THREE.Vector3[] = [];
+    for (let i = 0; i <= 32; i++) samples.push(this.pointAt(cfg, i / 32));
+    return new THREE.TubeGeometry(
+      new THREE.CatmullRomCurve3(samples),
+      32,
+      0.002,
+      6,
+      false,
+    );
+  }
+
   /** 0 at `from`, 1 at `to`, whichever direction that runs. */
+  get isHeld(): boolean {
+    return this.held;
+  }
+
   get progress(): number {
     if (!this.cfg) return 0;
     const pos = this.marker.position[this.cfg.axis];
@@ -191,13 +334,18 @@ class Rail {
   }
 
   reset(): void {
-    if (this.cfg) this.marker.position[this.cfg.axis] = this.cfg.from;
+    if (this.cfg) this.marker.position.copy(this.pointAt(this.cfg, 0));
     this.release();
   }
 
   release(): void {
     this.held = false;
     this.prevTip = null;
+    // Clear the flare too. A glow left running would otherwise survive into the
+    // next gesture, since configure() releases but never touched it.
+    this.glow = 0;
+    this.halo.visible = false;
+    (this.halo.material as THREE.SpriteMaterial).opacity = 0;
     this.refreshColour(true);
   }
 
@@ -208,9 +356,11 @@ class Rail {
     this.refreshColour(false);
   }
 
-  /** Steady white glow — the beat after a gesture completes. */
-  setGlow(on: boolean): void {
-    this.glowing = on;
+  /** Glow intensity 0..1 — the beat after a gesture completes. */
+  setGlow(intensity: number): void {
+    this.glow = Math.min(1, Math.max(0, intensity));
+    this.halo.visible = this.glow > 0.001;
+    (this.halo.material as THREE.SpriteMaterial).opacity = this.glow;
     this.refreshColour(true);
   }
 
@@ -259,11 +409,18 @@ class Rail {
     // marker being dragged rather than carried.
     const lo = Math.min(this.cfg.from, this.cfg.to);
     const hi = Math.max(this.cfg.from, this.cfg.to);
-    this.marker.position[this.cfg.axis] = THREE.MathUtils.clamp(
+    const moved = THREE.MathUtils.clamp(
       this.marker.position[this.cfg.axis] + delta,
       lo,
       hi,
     );
+
+    // Advance along the PRIMARY axis from the hand's motion, then re-seat onto
+    // the curve. The hand drives the sweep; the arc is the rail's shape, not
+    // something the player has to trace — trying to follow a bow exactly would
+    // make the marker drop the moment they cut the corner.
+    const t = (moved - this.cfg.from) / (this.cfg.to - this.cfg.from);
+    this.marker.position.copy(this.pointAt(this.cfg, t));
   }
 
   /**
@@ -309,7 +466,14 @@ class Rail {
     const tint = TINT[this.side];
     for (const m of this.materials) {
       m.color.setHex(tint.color);
-      if (this.glowing) m.emissive.setHex(GLOW_EMISSIVE);
+      if (this.glow > 0) {
+        // Lerp toward the glow rather than snapping, so intensity actually
+        // reads on the marker itself and not only on the halo around it.
+        m.emissive.setHex(tint.emissive).lerp(
+          new THREE.Color(GLOW_EMISSIVE),
+          this.glow,
+        );
+      }
       else if (this.held) m.emissive.setHex(HELD_EMISSIVE);
       else if (tracked) m.emissive.setHex(tint.emissive);
       else m.emissive.setHex(0x000000);
@@ -321,6 +485,14 @@ export class HandFollowCubeSystem extends createSystem({}) {
   private root!: THREE.Group;
   private rails!: Record<Handedness, Rail>;
   private readonly tip = new THREE.Vector3();
+  /** Floor correction, applied to the rails' heights — see Director's
+   *  FLOOR_OFFSET. Set before the rails are placed. */
+  private floorOffset = 0;
+  /** While true, the rails keep themselves in front of the player instead of
+   *  staying where they were first placed. */
+  private follow = false;
+  private readonly headLocal = new THREE.Vector3();
+  private readonly lookDir = new THREE.Vector3();
 
   // Right-hand speed tracking, for gesture-triggered audio.
   private readonly prevRightTip = new THREE.Vector3();
@@ -383,19 +555,48 @@ export class HandFollowCubeSystem extends createSystem({}) {
       from: +SWEEP_OUTER,
       to: +SWEEP_INNER,
       cross: SWEEP_Y_RIGHT,
+      arc: +SWEEP_ARC, // rises, then settles back to where it began
     });
     this.rails.left.configure({
       axis: "x",
       from: -SWEEP_OUTER,
       to: -SWEEP_INNER,
       cross: SWEEP_Y_LEFT,
+      arc: -SWEEP_ARC, // dips, then returns — the mirror of the right
     });
   }
 
-  /** Steady glow on both markers — the beat after a gesture completes. */
-  setGlow(on: boolean): void {
-    this.rails?.left.setGlow(on);
-    this.rails?.right.setGlow(on);
+  /**
+   * Lay both rails out for 五 expand — the hands parting outward.
+   *
+   * Mirrors configureForMorph but reversed: progress 0 is nearest the midline
+   * and 1 is out at the edge of reach, so "complete" still means the gesture
+   * was carried all the way through, and bothProgress needs no special casing.
+   *
+   * The start points are deliberately offset from where the sweep ended — the
+   * right lower and further right, the left higher and further left. Beginning
+   * exactly where the hands stopped would read as the same gesture continuing
+   * rather than a new one being offered.
+   */
+  configureForExpand(): void {
+    this.rails.right.configure({
+      axis: "x",
+      from: +EXPAND_INNER,
+      to: +EXPAND_OUTER,
+      cross: EXPAND_Y_RIGHT,
+    });
+    this.rails.left.configure({
+      axis: "x",
+      from: -EXPAND_INNER,
+      to: -EXPAND_OUTER,
+      cross: EXPAND_Y_LEFT,
+    });
+  }
+
+  /** Glow both markers, 0..1. */
+  setGlow(intensity: number): void {
+    this.rails?.left.setGlow(intensity);
+    this.rails?.right.setGlow(intensity);
   }
 
   reset(): void {
@@ -428,17 +629,25 @@ export class HandFollowCubeSystem extends createSystem({}) {
    * markers alone would be swallowed by the revealed world.
    */
   private loadMarkers() {
-    new GLTFLoader().load(
-      MARKER_URL,
-      (gltf) => {
-        this.rails.left.attachVisual(gltf.scene.clone(true));
-        this.rails.right.attachVisual(gltf.scene.clone(true));
-        this.drawOverSplats(this.root);
-        console.log("[Rails] markers attached (left light, right dark)");
-      },
-      undefined,
-      (err) => console.warn("[Rails] marker failed to load", err),
-    );
+    const loader = new GLTFLoader();
+    for (const side of ["left", "right"] as const) {
+      loader.load(
+        MARKER_URL[side],
+        (gltf) => {
+          // No clone needed now that each hand has its own file — but the
+          // material still gets cloned inside attachVisual, since a model could
+          // later be shared between the two.
+          this.rails[side].attachVisual(gltf.scene);
+          // Re-apply: the glb arrives long after init, so the always-on-top
+          // treatment would otherwise miss it and the marker alone would be
+          // swallowed by the revealed world.
+          this.drawOverSplats(this.root);
+          console.log(`[Rails] ${side} marker attached`);
+        },
+        undefined,
+        (err) => console.warn(`[Rails] ${side} marker failed to load`, err),
+      );
+    }
   }
 
   /**
@@ -466,6 +675,57 @@ export class HandFollowCubeSystem extends createSystem({}) {
 
   setVisible(visible: boolean): void {
     if (this.root) this.root.visible = visible;
+  }
+
+  /** Shift the rails vertically along with the rest of the world. */
+  setFloorOffset(metres: number): void {
+    this.floorOffset = metres;
+  }
+
+  /** Keep the rails in front of the player as they turn, rather than leaving
+   *  them where they were first placed. */
+  setFollowHead(on: boolean): void {
+    this.follow = on;
+  }
+
+  /** True while either hand is holding its marker. */
+  private get anyHeld(): boolean {
+    return this.rails.left.isHeld || this.rails.right.isHeld;
+  }
+
+  /**
+   * Ease the rails toward being in front of the player.
+   *
+   * Skipped entirely while a marker is held: moving the rail out from under a
+   * hand mid-gesture would change the marker's position without the hand
+   * having moved, which is exactly the snap the whole touch design avoids.
+   * So the rails reposition between gestures, never during one.
+   */
+  private followHead(delta: number) {
+    if (!this.root?.parent || this.anyHeld) return;
+
+    this.world.camera.getWorldPosition(this.headLocal);
+    this.root.parent.worldToLocal(this.headLocal);
+    this.world.camera.getWorldDirection(this.lookDir);
+
+    const k = 1 - Math.exp(-FOLLOW_RATE * delta); // frame-rate independent
+
+    const dx = this.headLocal.x - this.root.position.x;
+    const dz = this.headLocal.z - this.root.position.z;
+    if (Math.hypot(dx, dz) > FOLLOW_EPSILON) {
+      this.root.position.x += dx * k;
+      this.root.position.z += dz * k;
+    }
+
+    if (Math.hypot(this.lookDir.x, this.lookDir.z) > 1e-4) {
+      const target = Math.atan2(-this.lookDir.x, -this.lookDir.z);
+      // Shortest way round, so passing through +/-pi does not spin the rails
+      // the long way about.
+      let diff = target - this.root.rotation.y;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      this.root.rotation.y += diff * k;
+    }
   }
 
   /**
@@ -497,7 +757,7 @@ export class HandFollowCubeSystem extends createSystem({}) {
       this.root.rotation.y = Math.atan2(-dir.x, -dir.z);
     }
 
-    this.root.position.set(headLocal.x, 0, headLocal.z);
+    this.root.position.set(headLocal.x, this.floorOffset, headLocal.z);
     // A hold cannot survive the rails moving out from under it.
     this.rails?.left.release();
     this.rails?.right.release();
@@ -533,6 +793,8 @@ export class HandFollowCubeSystem extends createSystem({}) {
       if (side === "right") this.trackRightSpeed(delta);
       this.rails[side].drive(this.tip, this.root);
     }
+
+    if (this.follow) this.followHead(delta);
   }
 
   /** Measure right-fingertip speed frame to frame, in world metres. */

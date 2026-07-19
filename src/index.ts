@@ -2,6 +2,7 @@
 import * as THREE from "three";
 import {
   EnvironmentType,
+  ReferenceSpaceType,
   LocomotionEnvironment,
   Mesh,
   MeshBasicMaterial,
@@ -77,6 +78,18 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
   xr: {
     sessionMode: SessionMode.ImmersiveVR,
     offer: "always",
+    // Demand a real floor, and refuse to silently accept anything else.
+    //
+    // IWSDK's default asks for local-floor but falls back to `local` (origin at
+    // the HEAD, not the floor) without a word — and whether that happens varies
+    // between sessions on the same headset. That made every ground-level thing
+    // in the piece correct on some runs and a metre-and-a-half wrong on others,
+    // which no fixed offset can fix, because the error changes run to run.
+    //
+    // required: true removes the fallback. If the runtime cannot give a floor
+    // we find out immediately and loudly, instead of shipping a piece whose
+    // ground is wrong half the time.
+    referenceSpace: { type: ReferenceSpaceType.LocalFloor, required: true },
     features: { handTracking: true, layers: true },
   },
   render: {
