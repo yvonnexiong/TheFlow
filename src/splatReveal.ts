@@ -29,6 +29,12 @@ import { GaussianSplatLoaderSystem } from "./gaussianSplatLoader.js";
  *  if any of the world still stays hidden at full bloom. */
 const MAX_RADIUS = 1000.0;
 
+/** DIAGNOSTIC (2026-07-18): skip the reveal modifier entirely so the splat
+ *  renders raw. Isolates "is the shader eating splats?" from "is the data or
+ *  the loader at fault?". The world will simply be fully visible — the hand
+ *  gesture does nothing while this is true. Set false to restore. */
+const BYPASS_MODIFIER = false;
+
 /** Softness (metres) of the wavefront edge — larger = a wider, mistier band. */
 const EDGE_SOFTNESS = 3.0;
 
@@ -158,6 +164,16 @@ export class SplatRevealSystem extends createSystem({}) {
 
     this.mesh = mesh;
     this.maxRadiusUniform.value = MAX_RADIUS; // fixed reveal radius
+
+    if (BYPASS_MODIFIER) {
+      // DIAGNOSTIC: attach nothing at all. The splat renders raw, exactly as
+      // Spark loaded it. Previous attempts only widened MAX_RADIUS, which left
+      // the shader in the pipeline still scaling every splat by `reveal`.
+      this.attached = true;
+      console.warn("[SplatReveal] BYPASS_MODIFIER — raw splat, no reveal.");
+      return;
+    }
+
     mesh.worldModifier = this.createRevealModifier();
     mesh.updateGenerator(); // once — full pipeline recompile
     this.attached = true;
