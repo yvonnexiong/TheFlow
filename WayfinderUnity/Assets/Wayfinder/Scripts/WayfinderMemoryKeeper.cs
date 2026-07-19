@@ -361,6 +361,26 @@ public sealed class WayfinderMemoryKeeper
             WayfinderMemoryReasonCode.ReflectionSelected);
     }
 
+    /// <summary>
+    /// Opens the ending after all three validated practice orbits. The orbit
+    /// controller is the authority for completion, so no hidden fourth gesture
+    /// or movement timer is required.
+    /// </summary>
+    public WayfinderMemoryDecision CompletePractice()
+    {
+        if (State == WayfinderMemoryKeeperState.Unlocking ||
+            State == WayfinderMemoryKeeperState.Reflecting ||
+            State == WayfinderMemoryKeeperState.Rewarding ||
+            State == WayfinderMemoryKeeperState.MemorySaved)
+            return Decision(WayfinderMemoryAction.None, WayfinderMemoryReasonCode.None);
+
+        progress01 = 1f;
+        worldSlot.OpenPlaceholder();
+        State = WayfinderMemoryKeeperState.Unlocking;
+        return Decision(WayfinderMemoryAction.OpenMemoryWorld,
+            WayfinderMemoryReasonCode.SustainedSuccess);
+    }
+
     public WayfinderMemoryDecision DemoReset()
     {
         State = WayfinderMemoryKeeperState.AwaitingHands;

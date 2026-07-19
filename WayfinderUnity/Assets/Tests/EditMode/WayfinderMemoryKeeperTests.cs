@@ -209,6 +209,23 @@ namespace Wayfinder.Tests
         }
 
         [Test]
+        public void CompletedThreeOrbitPractice_OpensWorldWithoutHiddenFourthGesture()
+        {
+            var f = new Fixture();
+
+            WayfinderMemoryDecision decision = f.Keeper.CompletePractice();
+
+            Assert.That(f.World.IsOpen, Is.True);
+            Assert.That(f.World.OpenCount, Is.EqualTo(1));
+            AssertDecision(decision, WayfinderMemoryKeeperState.Unlocking,
+                WayfinderMemoryAction.OpenMemoryWorld, WayfinderMemoryReasonCode.SustainedSuccess);
+
+            f.Keeper.CompletePractice();
+            Assert.That(f.World.OpenCount, Is.EqualTo(1),
+                "Completion must open the world exactly once.");
+        }
+
+        [Test]
         public void UnknownReflectionChoice_IsRejectedWithoutArbitraryAction()
         {
             var f = new Fixture();

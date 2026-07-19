@@ -150,6 +150,12 @@ public sealed class WayfinderVerticalSliceSession
         return LastDecision;
     }
 
+    public WayfinderMemoryDecision CompletePractice()
+    {
+        LastDecision = keeper.CompletePractice();
+        return LastDecision;
+    }
+
     public WayfinderMemoryDecision Reset()
     {
         LastDecision = keeper.DemoReset();

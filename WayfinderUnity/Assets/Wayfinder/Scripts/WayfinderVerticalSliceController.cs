@@ -92,9 +92,13 @@ public sealed class WayfinderVerticalSliceController : MonoBehaviour
         circleResult = UpdateCircle(metrics, Time.unscaledDeltaTime);
         if (worldLabsWorldSlot != null && riverController.SuccessfulPushes >= 2)
             worldLabsWorldSlot.Prepare();
+        bool practiceComplete = riverController.SuccessfulPushes >= riverController.RequiredPushes;
         bool finalOrbit = riverController.SuccessfulPushes >= riverController.RequiredPushes - 1;
-        WayfinderMemoryDecision decision = session.Tick(
-            metrics, circleResult.ValidFlow && finalOrbit, Time.unscaledDeltaTime);
+        WayfinderMemoryDecision decision = practiceComplete &&
+                                           worldLabsWorldSlot != null &&
+                                           !worldLabsWorldSlot.IsOpen
+            ? session.CompletePractice()
+            : session.Tick(metrics, circleResult.ValidFlow && finalOrbit, Time.unscaledDeltaTime);
         if (scriptedReflection != null &&
             scriptedReflection.TryConsumeCompletion(out WayfinderReflectionChoice reflectionChoice))
             session.ChooseReflection(reflectionChoice);
