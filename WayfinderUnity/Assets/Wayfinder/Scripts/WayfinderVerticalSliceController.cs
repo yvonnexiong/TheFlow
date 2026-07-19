@@ -132,6 +132,26 @@ public sealed class WayfinderVerticalSliceController : MonoBehaviour
         UpdateProgressRing(0f);
     }
 
+    public void DemoStartExperience()
+    {
+        if (introComplete) return;
+        introComplete = true;
+        ApplyIntroState();
+        circularTracker.Reset();
+        activeCircleHand = 0;
+    }
+
+    public void DemoCompleteOrbit()
+    {
+        if (!introComplete || riverController == null ||
+            riverController.SuccessfulPushes >= riverController.RequiredPushes) return;
+        riverController.RegisterCircularStone();
+        lastStoryStone = riverController.SuccessfulPushes;
+        stoneAwakenedSeconds = Mathf.Max(1f, stoneStorySeconds);
+        if (riverController.SuccessfulPushes < riverController.RequiredPushes)
+            circularTracker.BeginNextOrbit();
+    }
+
     public static string NormalFeedback(
         WayfinderHandMotionMetrics metrics, WayfinderMemoryDecision decision)
     {

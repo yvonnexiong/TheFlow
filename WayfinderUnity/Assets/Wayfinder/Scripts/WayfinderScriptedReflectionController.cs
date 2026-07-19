@@ -25,6 +25,7 @@ public sealed class WayfinderScriptedReflectionController : MonoBehaviour
     [SerializeField] private TextMesh[] choiceLabels;
     [SerializeField] private Transform quietButton;
     [SerializeField] private TextMesh quietButtonLabel;
+    [SerializeField] private WayfinderMemoryWorldTransition finalWorldTransition;
     [SerializeField, Min(0.05f)] private float touchRadiusMeters = 0.13f;
     [SerializeField, Min(0f)] private float arrivalDelaySeconds = 3.4f;
     [SerializeField, Min(1f)] private float closingSeconds = 4f;
@@ -78,7 +79,8 @@ public sealed class WayfinderScriptedReflectionController : MonoBehaviour
         Transform[] buttons,
         TextMesh[] labels,
         Transform skipButton,
-        TextMesh skipLabel)
+        TextMesh skipLabel,
+        WayfinderMemoryWorldTransition worldTransition = null)
     {
         worldSlot = slot;
         palmPoseSource = poseSource;
@@ -89,6 +91,7 @@ public sealed class WayfinderScriptedReflectionController : MonoBehaviour
         choiceLabels = labels;
         quietButton = skipButton;
         quietButtonLabel = skipLabel;
+        finalWorldTransition = worldTransition;
         palms = poseSource as IWayfinderPalmPoseSource;
     }
 
@@ -100,6 +103,7 @@ public sealed class WayfinderScriptedReflectionController : MonoBehaviour
         firstChoice = -1;
         completionPending = false;
         completionChoice = WayfinderReflectionChoice.MemorySeed;
+        if (finalWorldTransition != null) finalWorldTransition.ResetTransition();
         if (presentationRoot != null) presentationRoot.SetActive(false);
     }
 
@@ -109,6 +113,16 @@ public sealed class WayfinderScriptedReflectionController : MonoBehaviour
         if (!completionPending) return false;
         completionPending = false;
         return true;
+    }
+
+    public void DemoSelectOpeningAnswer(int choice)
+    {
+        if (Stage == WayfinderReflectionStage.PromptOne) ShowPromptTwo(choice);
+    }
+
+    public void DemoSelectSecondAnswer(int choice)
+    {
+        if (Stage == WayfinderReflectionStage.PromptTwo) ShowClosing(choice);
     }
 
     public static string OpeningPrompt =>
@@ -152,11 +166,12 @@ public sealed class WayfinderScriptedReflectionController : MonoBehaviour
         Stage = WayfinderReflectionStage.Closing;
         stageSeconds = 0f;
         if (worldText != null)
-            worldText.text = "THANK YOU FOR LEAVING THAT HERE.\n\nSTAY AS LONG AS YOU NEED.";
+            worldText.text = "THE WORLD REMEMBERS.\n\nYOUR ATTENTION IS A PLACE.\nRETURN TO IT.";
         if (journalText != null)
             journalText.text = "TODAY'S REFLECTION\n\nLIFE FELT " + FirstChoiceJournal(firstChoice) +
                                ".\n\nPATIENCE APPEARED WHEN\n" + SecondChoiceJournal(choice) + ".";
         SetButtonsVisible(false);
+        if (finalWorldTransition != null) finalWorldTransition.BeginCelestialTransition();
     }
 
     private void ShowQuiet()

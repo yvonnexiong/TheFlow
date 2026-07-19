@@ -630,7 +630,8 @@ public static class WayfinderSceneBuilder
         WayfinderRewardMaterializationSlot rewardSlot = CreateTripoPlaceholderSlot(goldGlow);
         WayfinderPalmDwellTarget[] targets = CreateDwellTargets(jadeGlow, goldGlow);
         WayfinderScriptedReflectionController scriptedReflection = CreateScriptedReflection(
-            worldSlot, handVisualizer, panelMaterial, jadeGlow, goldGlow);
+            worldSlot, handVisualizer, panelMaterial, jadeGlow, goldGlow,
+            worldSlot.GetComponent<WayfinderMemoryWorldTransition>());
 
         GameObject controllerObject = new GameObject("Wayfinder Memory Vertical Slice");
         WayfinderVerticalSliceController controller = controllerObject.AddComponent<WayfinderVerticalSliceController>();
@@ -661,6 +662,10 @@ public static class WayfinderSceneBuilder
             dwellArray.GetArrayElementAtIndex(index).objectReferenceValue = targets[index];
         }
         serialized.ApplyModifiedPropertiesWithoutUndo();
+
+        GameObject trailerObject = new GameObject("Development Trailer Director • Idle By Default");
+        WayfinderTrailerDirector trailer = trailerObject.AddComponent<WayfinderTrailerDirector>();
+        trailer.Configure(controller, scriptedReflection, introButton, Camera.main);
     }
 
     private static void CreateOpeningLogo(Transform parent)
@@ -908,25 +913,17 @@ public static class WayfinderSceneBuilder
         original.GetComponent<Renderer>().sharedMaterial = memoryMaterial;
         UnityEngine.Object.DestroyImmediate(original.GetComponent<Collider>());
 
-        GameObject memory = new GameObject("Enchanted Bamboo Forest Sanctuary • PICO 300K");
+        GameObject memory = new GameObject("Prebuilt Memory Worlds • Bamboo to Celestial");
         memory.transform.SetParent(holder.transform, false);
-        GaussianSplatRenderer splatRenderer = memory.AddComponent<GaussianSplatRenderer>();
-        splatRenderer.m_Asset = AssetDatabase.LoadAssetAtPath<GaussianSplatAsset>(
-            WayfinderSplatImporter.AssetPath);
-        splatRenderer.m_ShaderSplats = AssetDatabase.LoadAssetAtPath<Shader>(
-            "Packages/org.nesnausk.gaussian-splatting/Shaders/RenderGaussianSplats.shader");
-        splatRenderer.m_ShaderComposite = AssetDatabase.LoadAssetAtPath<Shader>(
-            "Packages/org.nesnausk.gaussian-splatting/Shaders/GaussianComposite.shader");
-        splatRenderer.m_ShaderDebugPoints = AssetDatabase.LoadAssetAtPath<Shader>(
-            "Packages/org.nesnausk.gaussian-splatting/Shaders/GaussianDebugRenderPoints.shader");
-        splatRenderer.m_ShaderDebugBoxes = AssetDatabase.LoadAssetAtPath<Shader>(
-            "Packages/org.nesnausk.gaussian-splatting/Shaders/GaussianDebugRenderBoxes.shader");
-        splatRenderer.m_CSSplatUtilities = AssetDatabase.LoadAssetAtPath<ComputeShader>(
-            "Packages/org.nesnausk.gaussian-splatting/Shaders/SplatUtilities.compute");
-        splatRenderer.m_SHOrder = 0;
-        splatRenderer.m_SortNthFrame = 2;
-        splatRenderer.m_OpacityScale = 0.05f;
-        splatRenderer.m_RenderEnabled = false;
+        GameObject bamboo = new GameObject("Enchanted Bamboo Forest Sanctuary • PICO 300K");
+        bamboo.transform.SetParent(memory.transform, false);
+        GaussianSplatRenderer splatRenderer = ConfigureSplatRenderer(
+            bamboo, WayfinderSplatImporter.AssetPath);
+        GameObject celestial = new GameObject("Celestial Pathways Amidst Clouds • PICO 250K");
+        celestial.transform.SetParent(memory.transform, false);
+        GaussianSplatRenderer celestialRenderer = ConfigureSplatRenderer(
+            celestial, WayfinderSplatImporter.CelestialAssetPath);
+        celestial.SetActive(false);
         memory.SetActive(false);
 
         ParticleSystem sparks = CreateMemoryTransitionSparks(goldMaterial);
@@ -942,7 +939,31 @@ public static class WayfinderSceneBuilder
         WayfinderWorldRevealSlot slot = holder.AddComponent<WayfinderWorldRevealSlot>();
         slot.Configure(original.transform, memory.transform);
         slot.ConfigureReward(splatRenderer, sparks, transitionLight);
+        WayfinderMemoryWorldTransition finalTransition =
+            holder.AddComponent<WayfinderMemoryWorldTransition>();
+        finalTransition.Configure(splatRenderer, celestialRenderer, sparks);
         return slot;
+    }
+
+    private static GaussianSplatRenderer ConfigureSplatRenderer(GameObject root, string assetPath)
+    {
+        GaussianSplatRenderer renderer = root.AddComponent<GaussianSplatRenderer>();
+        renderer.m_Asset = AssetDatabase.LoadAssetAtPath<GaussianSplatAsset>(assetPath);
+        renderer.m_ShaderSplats = AssetDatabase.LoadAssetAtPath<Shader>(
+            "Packages/org.nesnausk.gaussian-splatting/Shaders/RenderGaussianSplats.shader");
+        renderer.m_ShaderComposite = AssetDatabase.LoadAssetAtPath<Shader>(
+            "Packages/org.nesnausk.gaussian-splatting/Shaders/GaussianComposite.shader");
+        renderer.m_ShaderDebugPoints = AssetDatabase.LoadAssetAtPath<Shader>(
+            "Packages/org.nesnausk.gaussian-splatting/Shaders/GaussianDebugRenderPoints.shader");
+        renderer.m_ShaderDebugBoxes = AssetDatabase.LoadAssetAtPath<Shader>(
+            "Packages/org.nesnausk.gaussian-splatting/Shaders/GaussianDebugRenderBoxes.shader");
+        renderer.m_CSSplatUtilities = AssetDatabase.LoadAssetAtPath<ComputeShader>(
+            "Packages/org.nesnausk.gaussian-splatting/Shaders/SplatUtilities.compute");
+        renderer.m_SHOrder = 0;
+        renderer.m_SortNthFrame = 2;
+        renderer.m_OpacityScale = 0.05f;
+        renderer.m_RenderEnabled = false;
+        return renderer;
     }
 
     private static ParticleSystem CreateMemoryTransitionSparks(Material fallbackMaterial)
@@ -1006,7 +1027,8 @@ public static class WayfinderSceneBuilder
         MonoBehaviour palmSource,
         Material panelMaterial,
         Material jadeMaterial,
-        Material goldMaterial)
+        Material goldMaterial,
+        WayfinderMemoryWorldTransition finalWorldTransition)
     {
         GameObject root = new GameObject("The World Asks • Scripted Reflection Journal");
         root.transform.SetParent(Camera.main.transform, false);
@@ -1043,7 +1065,7 @@ public static class WayfinderSceneBuilder
             root.AddComponent<WayfinderScriptedReflectionController>();
         controller.Configure(
             worldSlot, palmSource, root, prompt, journal,
-            buttons, labels, quietButton, quietLabel);
+            buttons, labels, quietButton, quietLabel, finalWorldTransition);
         root.SetActive(false);
         return controller;
     }

@@ -10,6 +10,7 @@ public static class WayfinderSplatImporter
 {
     public const string OutputFolder = "Assets/Wayfinder/Splats";
     public const string AssetPath = OutputFolder + "/theflow-bamboo-pico-300k.asset";
+    public const string CelestialAssetPath = OutputFolder + "/theflow-celestial-pico-250k.asset";
 
     public static void ImportPicoReward()
     {
@@ -47,10 +48,16 @@ public static class WayfinderSplatImporter
             EditorUtility.ClearProgressBar();
         }
 
-        GaussianSplatAsset asset = AssetDatabase.LoadAssetAtPath<GaussianSplatAsset>(AssetPath);
-        if (asset == null || asset.splatCount != 300000)
-            throw new InvalidOperationException("Expected a 300,000-splat reward asset at " + AssetPath);
-        Debug.Log($"THE FLOW: imported PICO reward splat ({asset.splatCount:N0} splats) at {AssetPath}");
+        string generatedAssetPath = OutputFolder + "/" + Path.GetFileNameWithoutExtension(input) + ".asset";
+        int expectedCount = 300000;
+        string countArgument = CommandLineValue("-wayfinderSplatCount");
+        if (!string.IsNullOrWhiteSpace(countArgument) && !int.TryParse(countArgument, out expectedCount))
+            throw new ArgumentException("-wayfinderSplatCount must be an integer.");
+        GaussianSplatAsset asset = AssetDatabase.LoadAssetAtPath<GaussianSplatAsset>(generatedAssetPath);
+        if (asset == null || asset.splatCount != expectedCount)
+            throw new InvalidOperationException(
+                $"Expected a {expectedCount:N0}-splat reward asset at {generatedAssetPath}");
+        Debug.Log($"THE FLOW: imported PICO reward splat ({asset.splatCount:N0} splats) at {generatedAssetPath}");
     }
 
     private static string CommandLineValue(string key)
