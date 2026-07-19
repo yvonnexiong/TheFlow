@@ -1,0 +1,17 @@
+{
+  "name": "Wayfinder.Runtime",
+  "rootNamespace": "",
+  "references": [
+    "Unity.XR.Hands",
+    "GaussianSplatting"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

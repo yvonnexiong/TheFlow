@@ -1,0 +1,31 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 33b71fae31e6c7d438e8566dc713e666, type: 3}
+  m_Name: theflow-celestial-pico-250k
+  m_EditorClassIdentifier: GaussianSplatting::GaussianSplatting.Runtime.GaussianSplatAsset
+  m_FormatVersion: 20231020
+  m_SplatCount: 250000
+  m_BoundsMin: {x: -380.11475, y: -139.36852, z: -137.09215}
+  m_BoundsMax: {x: 187.1675, y: 204.78526, z: 238.29282}
+  m_DataHash:
+    serializedVersion: 2
+    Hash: 35bdfb61993e4bfc3bd7fd29a6d856a9
+  m_PosFormat: 2
+  m_ScaleFormat: 2
+  m_SHFormat: 3
+  m_ColorFormat: 2
+  m_PosData: {fileID: 4900000, guid: d59787f458e1042888dbab0cfce7fb9d, type: 3}
+  m_ColorData: {fileID: 4900000, guid: 70a3a06612b514cd88387e73b07c1e72, type: 3}
+  m_OtherData: {fileID: 4900000, guid: 8f1fe28dd7b2c45bba7fccc2d6566dcd, type: 3}
+  m_SHData: {fileID: 4900000, guid: 301b921e4f6de49fea7bcc91e6bc0705, type: 3}
+  m_ChunkData: {fileID: 4900000, guid: d17b44a83b07b409287328f1dffd2164, type: 3}
+  m_Cameras: []
