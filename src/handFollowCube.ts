@@ -35,6 +35,7 @@ const HAND_TO_RAIL_GAIN = 3.0;
 const JOINT: XRHandJoint = "wrist";
 
 export class HandFollowCubeSystem extends createSystem({}) {
+  private root!: THREE.Group;
   private cube!: THREE.Mesh;
   private cubeMaterial!: THREE.MeshStandardMaterial;
 
@@ -58,14 +59,24 @@ export class HandFollowCubeSystem extends createSystem({}) {
     );
   }
 
+  /**
+   * Park the cube back at the left end (railProgress = 0) and drop the tracking
+   * anchor, so the next phase starts its 0..1 gesture range fresh without a
+   * jump. Used by the Director between phases.
+   */
+  reset(): void {
+    if (this.cube) this.cube.position.x = -TRACK_HALF_WIDTH;
+    this.prevHandX = null;
+  }
+
   init() {
     // Parent everything to the XR origin (this.player). Poses we read from
     // frame.getJointPose are expressed in the XR reference space, and the
     // XROrigin group *is* that space in scene terms — so a reference-space
     // position can be used directly as a local position here. Adding to
     // world.scene instead would drift as soon as the user locomotes.
-    const root = new THREE.Group();
-    this.player.add(root);
+    this.root = new THREE.Group();
+    this.player.add(this.root);
 
     // --- the rail ---
     const rail = new THREE.Mesh(
@@ -73,7 +84,7 @@ export class HandFollowCubeSystem extends createSystem({}) {
       new THREE.MeshBasicMaterial({ color: 0x334455 }),
     );
     rail.position.set(0, TRACK_Y, TRACK_Z);
-    root.add(rail);
+    this.root.add(rail);
 
     // --- end stops, so the travel limits are visible ---
     for (const x of [-TRACK_HALF_WIDTH, TRACK_HALF_WIDTH]) {
@@ -82,7 +93,7 @@ export class HandFollowCubeSystem extends createSystem({}) {
         new THREE.MeshBasicMaterial({ color: 0x334455 }),
       );
       cap.position.set(x, TRACK_Y, TRACK_Z);
-      root.add(cap);
+      this.root.add(cap);
     }
 
     // --- the cube ---
@@ -100,7 +111,13 @@ export class HandFollowCubeSystem extends createSystem({}) {
     // and a centred cube would mean phase 0.5 — both worlds half-dispersed
     // before the user has touched anything, which just looks like fog.
     this.cube.position.set(-TRACK_HALF_WIDTH, TRACK_Y, TRACK_Z);
-    root.add(this.cube);
+    this.root.add(this.cube);
+  }
+
+  /** Show/hide the whole rail + cube. The Director hides it during 一 breath
+   *  and 二 reveal so the void stays uncluttered, and shows it for the morph. */
+  setVisible(visible: boolean): void {
+    if (this.root) this.root.visible = visible;
   }
 
   update(_delta: number, _time: number) {

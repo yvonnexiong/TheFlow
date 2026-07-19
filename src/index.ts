@@ -17,6 +17,22 @@ import {
 import { GaussianSplatLoader, GaussianSplatLoaderSystem,} from "./gaussianSplatLoader.js";
 import { HandFollowCubeSystem } from "./handFollowCube.js";
 import { SplatMorphSystem } from "./splatMorph.js";
+import { SplatRevealSystem } from "./splatReveal.js";
+import { DirectorSystem } from "./director.js";
+
+
+// ------------------------------------------------------------
+// Which scene to run
+// ------------------------------------------------------------
+// "flow"   — The whole journey, one continuous session: 一 breath → 二 reveal
+//            → 三 morph, sequenced by the Director (creates/unloads its own
+//            splats). This is the real experience.
+// "reveal" — Scene 1 only: one world emerges outward from the centre.
+// "morph"  — Scene 2 only: two worlds swap as the rail cube scrubs the morph.
+//
+// The single-scene modes are kept as isolated test/fallback harnesses. Flip
+// this to switch what `npm run dev` shows.
+const SCENE_MODE: "flow" | "reveal" | "morph" = "flow";
 
 
 // ------------------------------------------------------------
@@ -81,8 +97,22 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     world
       // .registerSystem(PanelSystem)   // panel temporarily disabled
       .registerSystem(GaussianSplatLoaderSystem)
-      .registerSystem(HandFollowCubeSystem)
-      .registerSystem(SplatMorphSystem);
+      .registerSystem(HandFollowCubeSystem);
+
+    // Registered in separate branches (not a ternary) so each keeps its own
+    // concrete system type — registerSystem can't unify two different classes.
+    if (SCENE_MODE === "flow") {
+      // The Director drives the reveal and morph systems in turn, so all three
+      // are registered; the Director creates/unloads scene splats itself.
+      world
+        .registerSystem(SplatRevealSystem)
+        .registerSystem(SplatMorphSystem)
+        .registerSystem(DirectorSystem);
+    } else if (SCENE_MODE === "reveal") {
+      world.registerSystem(SplatRevealSystem);
+    } else {
+      world.registerSystem(SplatMorphSystem);
+    }
 
 
     // ------------------------------------------------------------
@@ -90,24 +120,45 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
     // ------------------------------------------------------------
     // Filenames contain spaces, so each must be percent-encoded — an
     // unencoded space makes the fetch 404 and the load silently time out.
-    const splatUrl = (file: string) => `./splats/${encodeURIComponent(file)}`;
+    // Encode each path segment so spaces survive AND subfolder "/" is preserved
+    // (encodeURIComponent on the whole string would turn "/" into "%2F" → 404).
+    const splatUrl = (p: string) =>
+      "./splats/" + p.split("/").map(encodeURIComponent).join("/");
 
-    // animate: false — the fly-in animator would fight the morph modifier for
-    // control of opacity. Both scenes start fully materialised; the morph
+    // animate: false — the fly-in animator would fight the reveal/morph modifier
+    // for control of opacity. Scenes start fully materialised; the modifier
     // decides what's visible.
-    const sceneA = world.createTransformEntity();
-    sceneA.addComponent(GaussianSplatLoader, {
-      splatUrl: splatUrl("Scene1_Ancient Chinese Bamboo Courtyard.spz"),
-      animate: false,
-    });
+    if (SCENE_MODE === "flow") {
+      // The Director creates and unloads its own scene splats per phase —
+      // nothing to pre-create here.
+    } else if (SCENE_MODE === "reveal") {
+      // Scene 1 (一 → 二): a single world emerges outward from the centre as
+      // the hand moves.
+      const scene1 = world.createTransformEntity();
+      scene1.addComponent(GaussianSplatLoader, {
+        splatUrl: splatUrl("Scene1/Celestial Pathways Amidst Clouds.compressed.ply"),
+        animate: false,
+      });
 
-    const sceneB = world.createTransformEntity();
-    sceneB.addComponent(GaussianSplatLoader, {
-      splatUrl: splatUrl("Scene2_Ruined Sanctuary Apocalyptic Aftermath.spz"),
-      animate: false,
-    });
+      const reveal = world.getSystem(SplatRevealSystem)!;
+      reveal.setScene(scene1);
+      reveal.grow(5); // auto-grow once loaded, so this mode is testable at a desk
+    } else {
+      // Scene 2 (二): two worlds swap as the rail cube scrubs the morph.
+      const sceneA = world.createTransformEntity();
+      sceneA.addComponent(GaussianSplatLoader, {
+        splatUrl: splatUrl("Scene1_Ancient Chinese Bamboo Courtyard.spz"),
+        animate: false,
+      });
 
-    world.getSystem(SplatMorphSystem)!.setScenes(sceneA, sceneB);
+      const sceneB = world.createTransformEntity();
+      sceneB.addComponent(GaussianSplatLoader, {
+        splatUrl: splatUrl("Scene2_Ruined Sanctuary Apocalyptic Aftermath.spz"),
+        animate: false,
+      });
+
+      world.getSystem(SplatMorphSystem)!.setScenes(sceneA, sceneB);
+    }
 
 
     // ------------------------------------------------------------
