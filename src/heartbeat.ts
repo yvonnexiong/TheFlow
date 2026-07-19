@@ -1,109 +1,139 @@
 // ------------------------------------------------------------
 // Heartbeat — the only sound in 一 Breath
 // ------------------------------------------------------------
-// Synthesised rather than sampled: a heartbeat is two low thumps with an
-// envelope, which WebAudio does exactly, and it keeps the repo free of an
-// audio asset for a sound that wants tuning by ear anyway.
-//
-// "Faint" is the whole brief — this should sit at the edge of hearing, felt
-// more than heard. Tune with PEAK_GAIN.
+// Plays a looped sample. "Faint" is the whole brief: this should sit at the
+// edge of hearing, felt more than heard. Tune with VOLUME.
 //
 // The AudioContext cannot start without a user gesture, so start() is called
 // from the Enter XR click path. Calling it earlier leaves the context
-// suspended and silent.
+// suspended and silent — decoding still happens, so the first beat is
+// immediate once the gesture arrives.
 
-/** Beats per minute — resting, slightly slow. The void is calm, not tense.
- *  Exported so the seed ring can pulse in time with what you hear. */
+import { getAudioContext, resumeAudio } from "./audio.js";
+
+/** Served from public/ — assets/ is not on Vite's static path. */
+const HEARTBEAT_URL = "./sfx/effect_heartbeat_1.mp3";
+
+/** Playback gain. Deliberately low; raise if inaudible on Quest speakers. */
+const VOLUME = 0.35;
+
+/** Tempo the seed ring pulses at.
+ *
+ *  Set BY HAND, matched to the sample by ear. Deriving it from the file's
+ *  duration only works if the file is exactly one beat — the current one is a
+ *  ~10s loop of many beats, which derived to 6 BPM and left the ring visibly
+ *  frozen. A duration-derived value is used only when the file is short enough
+ *  to plausibly be a single cycle (see SINGLE_BEAT_MAX_SECONDS). */
 export const HEARTBEAT_BPM = 54;
-const BPM = HEARTBEAT_BPM;
 
-/** Peak gain of the first thump. Deliberately tiny. */
-const PEAK_GAIN = 0.055;
-
-/** The second thump ("dub") is quieter and follows this soon after the first. */
-const DUB_DELAY = 0.34;
-const DUB_GAIN_RATIO = 0.62;
-
-/** Fundamental of each thump. Low enough to feel chest-like on headphones. */
-const THUMP_HZ = 48;
-
-/** How far ahead to schedule beats, and how often to top the queue up. */
-const SCHEDULE_AHEAD = 0.4;
-const TICK_MS = 120;
+/** Longest a sample can be and still be treated as one beat. */
+const SINGLE_BEAT_MAX_SECONDS = 2.0;
 
 export class Heartbeat {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
-  private timer: number | null = null;
-  private nextBeat = 0;
+  private buffer: AudioBuffer | null = null;
+  private source: AudioBufferSourceNode | null = null;
+  private loadPromise: Promise<void> | null = null;
+  /** The Director wants sound right now (cleared by stop()). */
+  private wanted = false;
 
-  /** Start (or resume) the heartbeat. Safe to call repeatedly. */
-  async start() {
-    if (!this.ctx) {
-      const Ctor =
-        window.AudioContext ??
-        (window as unknown as { webkitAudioContext?: typeof AudioContext })
-          .webkitAudioContext;
-      if (!Ctor) {
-        console.warn("[Heartbeat] No AudioContext available — staying silent.");
-        return;
-      }
-      this.ctx = new Ctor();
-      this.master = this.ctx.createGain();
-      this.master.gain.value = 1;
-      this.master.connect(this.ctx.destination);
-      this.nextBeat = this.ctx.currentTime + 0.15;
-    }
-
-    // Autoplay policy parks the context until a gesture resumes it.
-    if (this.ctx.state === "suspended") await this.ctx.resume();
-
-    if (this.timer === null) {
-      this.timer = window.setInterval(() => this.pump(), TICK_MS);
-    }
+  /**
+   * Tempo the ring should pulse at, in BPM.
+   *
+   * Prefers the hand-set HEARTBEAT_BPM, falling back to the sample's own
+   * length only when that length is short enough to be a single beat.
+   */
+  get bpm(): number {
+    const d = this.buffer?.duration ?? 0;
+    // Only trust the file's length when it could actually be a single beat.
+    // A multi-beat loop would otherwise report a tempo an order of magnitude
+    // too slow, and the ring would sit still.
+    if (d > 0 && d <= SINGLE_BEAT_MAX_SECONDS) return 60 / d;
+    return HEARTBEAT_BPM;
   }
 
-  /** Fade out over `seconds` and stop scheduling. */
+  /** Fetch and decode ahead of time so the first beat isn't late. */
+  load(): Promise<void> {
+    if (this.loadPromise) return this.loadPromise;
+    this.loadPromise = (async () => {
+      try {
+        const res = await fetch(HEARTBEAT_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status} for ${HEARTBEAT_URL}`);
+        const bytes = await res.arrayBuffer();
+        this.buffer = await this.context().decodeAudioData(bytes);
+        const derived =
+          this.buffer.duration <= SINGLE_BEAT_MAX_SECONDS
+            ? "from file"
+            : `fixed (file is a ${this.buffer.duration.toFixed(1)}s loop)`;
+        console.log(
+          `[Heartbeat] loaded ${this.buffer.duration.toFixed(2)}s ` +
+            `→ ring pulse ${this.bpm.toFixed(1)} BPM, ${derived}`,
+        );
+      } catch (err) {
+        // Silence is survivable; a thrown error during 一 is not.
+        console.warn("[Heartbeat] could not load — staying silent.", err);
+      }
+    })();
+    return this.loadPromise;
+  }
+
+  /** Start (or resume) the loop. Safe to call repeatedly. */
+  async start() {
+    this.wanted = true;
+    await this.load();
+    const ctx = this.context();
+    if (!ctx || !this.buffer) return;
+
+    // Autoplay policy parks the context until a user gesture resumes it. The
+    // Director calls start() as soon as the world has loaded, which is usually
+    // BEFORE the player has clicked anything — so resume() here does nothing
+    // and the beat would be lost silently. Arm a one-shot gesture listener that
+    // retries, so the first click/tap/key anywhere brings it in.
+    if (ctx.state !== "running") {
+      console.log("[Heartbeat] waiting for a gesture to unlock audio…");
+      if (!(await resumeAudio())) return;
+      if (!this.wanted) return; // Director moved on while we waited
+    }
+
+    if (this.source) return; // already beating
+
+    const master = this.master!;
+    master.gain.cancelScheduledValues(ctx.currentTime);
+    master.gain.setValueAtTime(VOLUME, ctx.currentTime);
+
+    this.source = ctx.createBufferSource();
+    this.source.buffer = this.buffer;
+    this.source.loop = true;
+    this.source.connect(master);
+    this.source.start();
+    console.log(`[Heartbeat] playing (gain ${VOLUME}, ctx ${ctx.state})`);
+  }
+
+  /** Fade out over `seconds`, then stop. */
   stop(seconds = 1.5) {
-    if (!this.ctx || !this.master) return;
+    this.wanted = false;
+    if (!this.ctx || !this.master || !this.source) return;
     const now = this.ctx.currentTime;
+    const src = this.source;
+    this.source = null;
+
     this.master.gain.cancelScheduledValues(now);
     this.master.gain.setValueAtTime(this.master.gain.value, now);
     this.master.gain.linearRampToValueAtTime(0.0001, now + seconds);
-    if (this.timer !== null) {
-      window.clearInterval(this.timer);
-      this.timer = null;
-    }
+    // Stop slightly after the ramp so the tail isn't clipped.
+    src.stop(now + seconds + 0.05);
   }
 
-  /** Queue up any beats falling inside the lookahead window. */
-  private pump() {
-    if (!this.ctx) return;
-    const period = 60 / BPM;
-    while (this.nextBeat < this.ctx.currentTime + SCHEDULE_AHEAD) {
-      this.thump(this.nextBeat, PEAK_GAIN);
-      this.thump(this.nextBeat + DUB_DELAY, PEAK_GAIN * DUB_GAIN_RATIO);
-      this.nextBeat += period;
+  /** Master gain on the shared context, built on first use. */
+  private context(): AudioContext {
+    const c = getAudioContext();
+    if (!this.master) {
+      this.master = c.createGain();
+      this.master.gain.value = VOLUME;
+      this.master.connect(c.destination);
     }
-  }
-
-  /** One thump: a low sine pitched down through a fast percussive envelope. */
-  private thump(at: number, peak: number) {
-    if (!this.ctx || !this.master) return;
-
-    const osc = this.ctx.createOscillator();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(THUMP_HZ, at);
-    // Slight downward glide gives the thump its body rather than a beep.
-    osc.frequency.exponentialRampToValueAtTime(THUMP_HZ * 0.62, at + 0.16);
-
-    const env = this.ctx.createGain();
-    env.gain.setValueAtTime(0.0001, at);
-    env.gain.exponentialRampToValueAtTime(peak, at + 0.018);
-    env.gain.exponentialRampToValueAtTime(0.0001, at + 0.26);
-
-    osc.connect(env).connect(this.master);
-    osc.start(at);
-    osc.stop(at + 0.3);
+    this.ctx = c;
+    return c;
   }
 }
