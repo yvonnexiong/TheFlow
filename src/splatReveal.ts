@@ -27,7 +27,10 @@ import { GaussianSplatLoaderSystem } from "./gaussianSplatLoader.js";
  *  fit inside this or its far edges never reveal. Fixed rather than measured,
  *  because SparkJS bounding boxes under-report the true splat extent. Raise it
  *  if any of the world still stays hidden at full bloom. */
-const MAX_RADIUS = 1000.0;
+// Must clear the world's extent PLUS two edge-widths (see setWavefront), so
+// the outermost content lands inside the fully-opaque boundary rather than in
+// the fade band. World reaches 85m, edge is ~7m there → 99m minimum.
+const MAX_RADIUS = 150.0;
 
 /** DIAGNOSTIC (2026-07-18): skip the reveal modifier entirely so the splat
  *  renders raw. Isolates "is the shader eating splats?" from "is the data or
@@ -35,8 +38,42 @@ const MAX_RADIUS = 1000.0;
  *  gesture does nothing while this is true. Set false to restore. */
 const BYPASS_MODIFIER = false;
 
+/**
+ * Radial content distribution of the scene-1 world, measured from the
+ * compressed .ply's own per-chunk bounds.
+ *
+ * Entry i is the wavefront radius (metres) that reveals i/(N-1) of the splats.
+ * The world is non-uniform — half its content sits within 11 m and 95% within
+ * 26 m, but a far corner reaches 85 m — so a wavefront whose RADIUS moves
+ * linearly would dump most of the world in the first third of the lift.
+ *
+ * Interpolating this table instead maps the gesture to CONTENT rather than
+ * distance: equal hand movement reveals an equal amount of world, which is
+ * what "linear" actually feels like.
+ *
+ * Regenerate if the scene changes — it is specific to this splat.
+ */
+const CONTENT_RADIUS_LUT = [
+  0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 11, 12, 13, 14, 15, 15, 17, 19, 21, 26, 85,
+];
+
+/** Map 0..1 through the table above, linearly interpolating between entries. */
+function contentRadius(t: number): number {
+  const clamped = Math.min(1, Math.max(0, t));
+  const scaled = clamped * (CONTENT_RADIUS_LUT.length - 1);
+  const i = Math.min(Math.floor(scaled), CONTENT_RADIUS_LUT.length - 2);
+  const f = scaled - i;
+  return (
+    CONTENT_RADIUS_LUT[i] * (1 - f) + CONTENT_RADIUS_LUT[i + 1] * f
+  );
+}
+
 /** Softness (metres) of the wavefront edge — larger = a wider, mistier band. */
 const EDGE_SOFTNESS = 3.0;
+
+/** Edge band as a fraction of the current radius, so the front stays
+ *  proportionally misty as the wavefront grows. */
+const EDGE_RATIO = 0.08;
 
 /** Per-splat radial jitter (metres) so the front is an irregular ink edge. */
 const EDGE_JITTER = 1.2;
@@ -55,6 +92,12 @@ export class SplatRevealSystem extends createSystem({}) {
   // Wavefront radius at progress = 1. Sized to the loaded world's extent in
   // applyMeasuredRadius() so the whole world reveals; MAX_RADIUS is the fallback.
   private maxRadiusUniform = dyno.dynoFloat(MAX_RADIUS);
+  // Edge width is driven per-frame by setWavefront, so it must be the SAME
+  // dyno object the shader samples — not a fresh one built at attach time.
+  private edgeUniform = dyno.dynoFloat(EDGE_SOFTNESS);
+  /** Gesture value 0..1 — content revealed. Distinct from progress.value,
+   *  which is the remapped radius fraction the shader consumes. */
+  private revealT = 0;
   private attached = false;
   private waitLogged = false;
 
@@ -69,6 +112,39 @@ export class SplatRevealSystem extends createSystem({}) {
   private growing = false;
   private growElapsed = 0;
   private growDuration = DEFAULT_GROW_SECONDS;
+
+  /**
+   * Drive the wavefront from a 0..1 gesture value.
+   *
+   * `t` is CONTENT revealed, not distance travelled. It goes through
+   * contentRadius() to get the metre radius that exposes that fraction of the
+   * world, then back into the shader's progress uniform (which the GLSL
+   * multiplies by MAX_RADIUS). The edge band widens with the radius so the
+   * front stays proportionally soft instead of turning into a hard line once
+   * the wavefront is hundreds of metres out.
+   */
+  private setWavefront(t: number): void {
+    const clamped = Math.min(1, Math.max(0, t));
+    this.revealT = clamped;
+
+    // contentRadius(t) is the radius that should be FULLY revealed. The shader
+    // only reaches full opacity inside (R - edge), and fades out to nothing by
+    // (R + edge) — so R has to sit a whole edge-width beyond the target, and
+    // the progress that produces it another edge-width beyond that:
+    //
+    //     R = progress * MAX_RADIUS - edge   (shader)
+    //     R - edge = radius                  (what we want fully revealed)
+    //  => progress = (radius + 2 * edge) / MAX_RADIUS
+    //
+    // Setting progress = radius / MAX_RADIUS (as this did) left the outermost
+    // content sitting inside the fade band, so the world never fully arrived
+    // at the top of the rail. With the edge scaling as 8% of radius, that band
+    // is ~85m wide out at the rim — very visible.
+    const radius = contentRadius(clamped);
+    const edge = Math.max(EDGE_SOFTNESS, radius * EDGE_RATIO);
+    this.edgeUniform.value = edge;
+    this.progress.value = (radius + 2 * edge) / MAX_RADIUS;
+  }
 
   /** Register the splat world to reveal. Call once, right after creating it. */
   setScene(scene: Entity): void {
@@ -91,9 +167,15 @@ export class SplatRevealSystem extends createSystem({}) {
     this.growElapsed = 0;
   }
 
+  /** Radius (m) currently revealed at full opacity — what the shader's
+   *  R - edge boundary actually works out to. Diagnostic. */
+  get fullyRevealedRadius(): number {
+    return this.progress.value * MAX_RADIUS - 2 * this.edgeUniform.value;
+  }
+
   /** True once the reveal has fully grown. */
   get isRevealed(): boolean {
-    return this.progress.value >= 0.999;
+    return this.revealT >= 0.999;
   }
 
   /** True once the splat has loaded and the reveal modifier is attached — i.e.
@@ -114,6 +196,8 @@ export class SplatRevealSystem extends createSystem({}) {
     this.growing = false;
     this.growElapsed = 0;
     this.progress.value = 0;
+    this.revealT = 0;
+    this.edgeUniform.value = EDGE_SOFTNESS;
   }
 
   update(delta: number) {
@@ -133,10 +217,10 @@ export class SplatRevealSystem extends createSystem({}) {
       // delta is assumed to be in seconds (three/IWSDK convention).
       this.growElapsed += delta;
       const t = Math.min(1, this.growElapsed / this.growDuration);
-      this.progress.value = t * t * (3 - 2 * t); // smoothstep ease
+      this.setWavefront(t * t * (3 - 2 * t)); // smoothstep ease
       if (t >= 1) this.growing = false;
     } else if (this.externalProgress !== null) {
-      this.progress.value = Math.min(1, Math.max(0, this.externalProgress));
+      this.setWavefront(this.externalProgress);
     }
     // else: latched — progress holds its last value.
 
@@ -191,7 +275,7 @@ export class SplatRevealSystem extends createSystem({}) {
   private createRevealModifier() {
     const progress = this.progress;
     const maxRadius = this.maxRadiusUniform;
-    const edge = dyno.dynoFloat(EDGE_SOFTNESS);
+    const edge = this.edgeUniform;
     const jitter = dyno.dynoFloat(EDGE_JITTER);
     const emergeFrom = dyno.dynoFloat(EMERGE_FROM);
 

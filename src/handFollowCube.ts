@@ -4,69 +4,79 @@ import { createSystem } from "@iwsdk/core";
 // ------------------------------------------------------------
 // Hand-driven cube on a linear rail
 // ------------------------------------------------------------
-// A cube sits on a horizontal track in front of the user. Moving a tracked
-// hand (or controller) left/right moves the cube left/right at exactly the
-// same speed. Hand stops -> cube stops. Only the X axis is mapped; the cube's
-// height and depth are fixed, so it can only slide along the rail.
+// A cube rides a VERTICAL track within arm's reach. The player TOUCHES it and
+// carries it upward; the cube only moves while a hand is actually on it.
 //
-// The mapping is RELATIVE, not absolute: each frame we add the hand's X
-// *delta* to the cube, rather than assigning the hand's X to the cube. Both
-// reproduce hand speed exactly, but absolute mapping would teleport the cube
-// to the hand's X on the first tracked frame. Relative mapping leaves the cube
-// where it is and nudges it by however much the hand moved.
+// railProgress runs 0 at the BOTTOM to 1 at the TOP, so the world is drawn
+// upward out of nothing — the gesture is lifting, not sweeping.
+//
+// Touching ENGAGES the cube; it does not place it. On contact the cube stays
+// exactly where it is — at 0, if it hasn't been moved — and from then on
+// follows the hand's VELOCITY: each frame it moves by however far the fingertip
+// moved. Grabbing therefore never jumps the reveal, however high the player
+// happened to reach to make contact.
 
-const TRACK_Y = 1.3; // eye-ish height (world.camera sits at y=1.5)
-const TRACK_Z = -1.5; // 1.5m in front of the user
-const TRACK_HALF_WIDTH = 1.0; // cube travels within +/- 1m
+const TRACK_Z = -0.42; // within arm's reach, so the cube can be touched
+const TRACK_X = 0.0; // centred laterally
+
+// Vertical travel: TRACK_BOTTOM (progress 0) up to TRACK_TOP (progress 1).
+// Chest to eye level, 0.55m of travel — a relaxed lift rather than an overhead
+// stretch, so the top is comfortable to hold while looking at the result.
+const TRACK_BOTTOM = 1.0;
+const TRACK_TOP = 1.55;
+const TRACK_HEIGHT = TRACK_TOP - TRACK_BOTTOM;
+
 const CUBE_SIZE = 0.14;
 
-// Hand travel -> rail travel multiplier.
-//
-// At 1.0 the cube exactly matches the hand's distance and speed, but the rail
-// is 2m wide and a comfortable lateral reach is only ~0.7m — so the cube can
-// never pass the middle. At 3.0 a ~0.7m sweep covers the full rail.
-//
-// This deliberately trades away exact speed-matching for reachability. Raise
-// it for less arm movement per transition, lower it for finer control.
-const HAND_TO_RAIL_GAIN = 3.0;
+/** How close the fingertip must be to the cube's centre to grab it (metres).
+ *  Generous relative to the 0.14m cube — hand tracking is noisy, and a miss
+ *  that silently does nothing is more frustrating than an early catch. */
+const TOUCH_RADIUS = 0.14;
 
-// Wrist is noticeably steadier than a fingertip — fingertip joints wobble a
-// few mm even when the hand is still, and that shows up as cube shimmer.
-const JOINT: XRHandJoint = "wrist";
+/** Once held, the finger may stray this far before the cube is released.
+ *  Larger than TOUCH_RADIUS so brief jitter doesn't drop it mid-lift. */
+const RELEASE_RADIUS = 0.26;
+
+// Fingertip, not wrist: the gesture is now touching a specific object, and the
+// wrist sits ~15cm behind where the player believes their hand is — enough to
+// make contact feel wrong. Fingertip joints do wobble a few mm at rest, which
+// shows up as slight cube shimmer while held; that is the price of contact
+// landing where it looks like it should.
+const JOINT: XRHandJoint = "index-finger-tip";
 
 export class HandFollowCubeSystem extends createSystem({}) {
   private root!: THREE.Group;
   private cube!: THREE.Mesh;
   private cubeMaterial!: THREE.MeshStandardMaterial;
 
-  // Hand X from the previous frame, in reference space. null means "we have no
-  // usable previous sample" — either we haven't started, or tracking dropped.
-  // Resetting to null is what prevents a stale-position jump when the hand
-  // leaves the camera's view mid-motion and comes back somewhere else.
-  private prevHandX: number | null = null;
+  /** True while a fingertip is holding the cube. */
+  private held = false;
+  /** Fingertip height (rail-local) last frame while held; null when not held.
+   *  Movement is measured against this, never assigned from it. */
+  private prevTipY: number | null = null;
+  // Scratch, reused per frame so the update loop allocates nothing.
+  private readonly cubeWorld = new THREE.Vector3();
 
   /**
    * Cube position along the rail, normalized to 0..1
-   * (0 = far left, 1 = far right). Drives the splat-world morph.
+   * (0 = bottom, 1 = top). Drives the splat-world reveal.
    *
    * Returns 0 before init() has built the cube — systems may read this during
    * their own init/update ordering before ours has run.
    */
   get railProgress(): number {
     if (!this.cube) return 0;
-    return (
-      (this.cube.position.x + TRACK_HALF_WIDTH) / (TRACK_HALF_WIDTH * 2)
-    );
+    return (this.cube.position.y - TRACK_BOTTOM) / TRACK_HEIGHT;
   }
 
   /**
-   * Park the cube back at the left end (railProgress = 0) and drop the tracking
+   * Park the cube back at the bottom (railProgress = 0) and drop the tracking
    * anchor, so the next phase starts its 0..1 gesture range fresh without a
    * jump. Used by the Director between phases.
    */
   reset(): void {
-    if (this.cube) this.cube.position.x = -TRACK_HALF_WIDTH;
-    this.prevHandX = null;
+    if (this.cube) this.cube.position.y = TRACK_BOTTOM;
+    this.held = false;
   }
 
   init() {
@@ -80,19 +90,19 @@ export class HandFollowCubeSystem extends createSystem({}) {
 
     // --- the rail ---
     const rail = new THREE.Mesh(
-      new THREE.BoxGeometry(TRACK_HALF_WIDTH * 2, 0.004, 0.004),
+      new THREE.BoxGeometry(0.004, TRACK_HEIGHT, 0.004),
       new THREE.MeshBasicMaterial({ color: 0x334455 }),
     );
-    rail.position.set(0, TRACK_Y, TRACK_Z);
+    rail.position.set(TRACK_X, (TRACK_BOTTOM + TRACK_TOP) / 2, TRACK_Z);
     this.root.add(rail);
 
     // --- end stops, so the travel limits are visible ---
-    for (const x of [-TRACK_HALF_WIDTH, TRACK_HALF_WIDTH]) {
+    for (const y of [TRACK_BOTTOM, TRACK_TOP]) {
       const cap = new THREE.Mesh(
-        new THREE.BoxGeometry(0.006, 0.06, 0.006),
+        new THREE.BoxGeometry(0.06, 0.006, 0.006),
         new THREE.MeshBasicMaterial({ color: 0x334455 }),
       );
-      cap.position.set(x, TRACK_Y, TRACK_Z);
+      cap.position.set(TRACK_X, y, TRACK_Z);
       this.root.add(cap);
     }
 
@@ -107,10 +117,10 @@ export class HandFollowCubeSystem extends createSystem({}) {
       new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE),
       this.cubeMaterial,
     );
-    // Start at the LEFT end, not centre. railProgress feeds the splat morph,
-    // and a centred cube would mean phase 0.5 — both worlds half-dispersed
-    // before the user has touched anything, which just looks like fog.
-    this.cube.position.set(-TRACK_HALF_WIDTH, TRACK_Y, TRACK_Z);
+    // Start at the BOTTOM, not the middle. railProgress feeds the reveal, and
+    // a centred cube would mean the world is half-revealed before the player
+    // has touched anything.
+    this.cube.position.set(TRACK_X, TRACK_BOTTOM, TRACK_Z);
     this.root.add(this.cube);
 
     this.drawOverSplats(this.root);
@@ -141,96 +151,161 @@ export class HandFollowCubeSystem extends createSystem({}) {
   }
 
   /** Show/hide the whole rail + cube. The Director hides it during 一 breath
-   *  and 二 reveal so the void stays uncluttered, and shows it for the morph. */
+   *  and 二 disc so the void stays uncluttered, and shows it for 三 reveal. */
   setVisible(visible: boolean): void {
     if (this.root) this.root.visible = visible;
+  }
+
+  /**
+   * Re-seat the rail an arm's length in front of the player's head, facing them.
+   *
+   * The rail is parented to the XR origin, but the player physically WALKS
+   * during scene 0 — stepping into the seed circle moves them ~1.2m forward
+   * while the origin stays put. A rail fixed at z=-1.5 in origin space would
+   * then be inches from their face, or behind them. So scene 2 places it
+   * relative to wherever the player actually ended up.
+   *
+   * Only yaw is taken from the head: the rail stays upright and at fixed
+   * heights, so looking up or down doesn't tilt it.
+   */
+  placeInFrontOf(camera: THREE.Camera): void {
+    if (!this.root?.parent) return;
+
+    const headWorld = new THREE.Vector3();
+    camera.getWorldPosition(headWorld);
+    const headLocal = this.root.parent.worldToLocal(headWorld.clone());
+
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+
+    // Straight up/down gives a degenerate horizontal direction — keep the
+    // rail's current yaw rather than snapping it somewhere arbitrary.
+    if (Math.hypot(dir.x, dir.z) > 1e-4) {
+      // A group rotated by θ about Y sends its local -Z to (-sinθ, 0, -cosθ);
+      // matching that to the look direction gives θ = atan2(-x, -z).
+      this.root.rotation.y = Math.atan2(-dir.x, -dir.z);
+    }
+
+    // Keep y at 0 so TRACK_BOTTOM/TRACK_TOP still set heights in player space.
+    this.root.position.set(headLocal.x, 0, headLocal.z);
+    this.held = false; // a hold cannot survive the rail moving
+    this.prevTipY = null;
   }
 
   update(_delta: number, _time: number) {
     const frame = this.xrFrame;
     const refSpace = this.xrManager.getReferenceSpace();
 
-    // Not in XR yet, or no reference space — park the tracking state so the
-    // next tracked frame starts fresh instead of differencing against a
-    // position from before the session.
     if (!frame || !refSpace) {
+      this.held = false;
+      this.prevTipY = null;
       this.setTracked(false);
-      this.prevHandX = null;
       return;
     }
 
-    const handX = this.readHandX(frame, refSpace);
-    if (handX === null) {
+    const tip = this.readHandTip(frame, refSpace);
+    if (!tip) {
+      this.held = false;
+      this.prevTipY = null;
       this.setTracked(false);
-      this.prevHandX = null;
       return;
     }
     this.setTracked(true);
 
-    // First tracked frame: record the anchor and move nothing. Without this the
-    // very first delta would be measured against null and the cube would jump.
-    if (this.prevHandX === null) {
-      this.prevHandX = handX;
+    // Hand poses arrive in reference space, which IS player space in scene
+    // terms; the rail sits under a moved/rotated root, so compare in world.
+    this.player.localToWorld(tip);
+    this.cube.getWorldPosition(this.cubeWorld);
+    const dist = tip.distanceTo(this.cubeWorld);
+
+    // Asymmetric thresholds: harder to catch than to keep. Without hysteresis
+    // the cube drops and re-grabs repeatedly as the fingertip jitters around a
+    // single boundary.
+    const wasHeld = this.held;
+    this.held = this.held ? dist < RELEASE_RADIUS : dist < TOUCH_RADIUS;
+    this.setHeld(this.held);
+
+    if (!this.held) {
+      this.prevTipY = null; // released — next grab starts a fresh reference
       return;
     }
 
-    const deltaX = handX - this.prevHandX;
-    this.prevHandX = handX;
+    this.root.worldToLocal(tip);
 
-    // Scaled 1:1 — the cube moves in lockstep with the hand and stops the
-    // instant the hand stops, but covers HAND_TO_RAIL_GAIN times the distance.
-    // Still no smoothing: a lerp toward a target would lag on acceleration and
-    // coast past on stop, which would feel disconnected from the hand.
-    this.cube.position.x = THREE.MathUtils.clamp(
-      this.cube.position.x + deltaX * HAND_TO_RAIL_GAIN,
-      -TRACK_HALF_WIDTH,
-      TRACK_HALF_WIDTH,
+    // The frame contact is made, record the reference height and move NOTHING.
+    // This is what stops the cube snapping: the player may have reached in at
+    // any height, and that height carries no meaning — only what they do next.
+    if (!wasHeld || this.prevTipY === null) {
+      this.prevTipY = tip.y;
+      return;
+    }
+
+    const deltaY = tip.y - this.prevTipY;
+    this.prevTipY = tip.y;
+
+    // Velocity match at 1:1 — the cube travels exactly as far as the hand did,
+    // and stops the instant the hand stops. No smoothing: a lerp toward a
+    // target would lag on acceleration and coast past on stop, which reads as
+    // the cube being dragged rather than carried.
+    this.cube.position.y = THREE.MathUtils.clamp(
+      this.cube.position.y + deltaY,
+      TRACK_BOTTOM,
+      TRACK_TOP,
     );
   }
 
-  /**
-   * X position of the driving hand in reference space, or null if nothing is
-   * tracked this frame.
-   *
-   * Prefers an articulated hand; falls back to a controller grip so this is
-   * testable with controllers (and under the IWER desktop emulator). Right hand
-   * wins over left so the two hands can't fight over the cube.
-   */
-  private readHandX(frame: XRFrame, refSpace: XRReferenceSpace): number | null {
+  private readHandTip(
+    frame: XRFrame,
+    refSpace: XRReferenceSpace,
+  ): THREE.Vector3 | null {
     const session = this.world.session;
     if (!session) return null;
 
-    let fallbackX: number | null = null;
+    let fallback: THREE.Vector3 | null = null;
 
     for (const source of session.inputSources) {
-      let x: number | null = null;
+      let pos: THREE.Vector3 | null = null;
 
       // getJointPose is optional — absent on runtimes without hand input.
       if (source.hand && frame.getJointPose) {
         const joint = source.hand.get(JOINT);
-        // Returns null whenever the joint isn't currently tracked —
-        // routinely, at the edge of the headset's camera FOV.
+        // Null whenever the joint isn't currently tracked — routinely, at the
+        // edge of the headset's camera FOV.
         const pose = joint ? frame.getJointPose(joint, refSpace) : null;
-        if (pose) x = pose.transform.position.x;
+        if (pose) {
+          const t = pose.transform.position;
+          pos = new THREE.Vector3(t.x, t.y, t.z);
+        }
       }
 
       // Controller grip, or a hand whose joints we couldn't read.
-      if (x === null && source.gripSpace) {
+      if (!pos && source.gripSpace) {
         const pose = frame.getPose(source.gripSpace, refSpace);
-        if (pose) x = pose.transform.position.x;
+        if (pose) {
+          const t = pose.transform.position;
+          pos = new THREE.Vector3(t.x, t.y, t.z);
+        }
       }
 
-      if (x === null) continue;
-      if (source.handedness === "right") return x;
-      fallbackX = x;
+      if (!pos) continue;
+      // Either hand may grab it; prefer the right when both are tracked.
+      if (source.handedness === "right") return pos;
+      fallback = pos;
     }
 
-    return fallbackX;
+    return fallback;
   }
 
-  /** Tint the cube so it's obvious on-device whether tracking is live. */
   private setTracked(tracked: boolean) {
+    if (this.held) return; // held colour wins
     this.cubeMaterial.color.setHex(tracked ? 0x00aaff : 0x555555);
     this.cubeMaterial.emissive.setHex(tracked ? 0x003355 : 0x000000);
+  }
+
+  /** Brighten while held, so contact is unmistakable — the player needs to know
+   *  they have it before they start lifting. */
+  private setHeld(held: boolean) {
+    this.cubeMaterial.color.setHex(held ? 0xffffff : 0x00aaff);
+    this.cubeMaterial.emissive.setHex(held ? 0x66ccff : 0x003355);
   }
 }

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { createSystem, Entity } from "@iwsdk/core";
 import {
   GaussianSplatLoader,
@@ -6,7 +7,8 @@ import {
 } from "./gaussianSplatLoader.js";
 import { HandFollowCubeSystem } from "./handFollowCube.js";
 import { SplatRevealSystem } from "./splatReveal.js";
-import { Heartbeat, HEARTBEAT_BPM } from "./heartbeat.js";
+import { Heartbeat } from "./heartbeat.js";
+import { Sound } from "./audio.js";
 
 // ------------------------------------------------------------
 // Director — sequences the whole journey in ONE continuous session
@@ -34,13 +36,15 @@ type PhaseId = "breath" | "disc" | "reveal";
  *  false for the real experience. */
 const SHOW_LOADING_INDICATOR = true;
 
-/** 一 Breath is a pure white void. That white belongs to Scene 0 only — once a
- *  world exists, gaps in the splat would show it through as bright holes, so
- *  the background changes with the phase. Splat captures are never watertight;
- *  the backdrop's job from 二 onward is to be what you *don't* notice behind
- *  them. Dark reads as depth; white reads as damage. */
+/** White throughout: 一 Breath's void and the backdrop behind the revealed
+ *  world are now the same. Kept as two constants because they are conceptually
+ *  different surfaces and may diverge again.
+ *
+ *  Trade-off worth remembering: gaps in a splat capture show the backdrop
+ *  through, and against white those read as bright holes rather than depth. If
+ *  the world starts looking punctured, this is the first thing to change. */
 const VOID_COLOR = 0xffffff;
-const WORLD_COLOR = 0x000000;
+const WORLD_COLOR = 0xffffff;
 
 /** Ring colour. Grey, because 一 Breath is a pure white void — white on white
  *  is nothing. Pulses between OPACITY_MIN and OPACITY_MAX on the heartbeat. */
@@ -72,7 +76,7 @@ const DWELL_SECONDS = 1.5;
 
 /** While true, HOLD on scene 1 once the disc has grown instead of advancing
  *  into scene 2. Flip to false to chain the next scene. */
-const HOLD_AFTER_DISC = true;
+const HOLD_AFTER_DISC = false;
 
 /** Scene 1 — the ground disc.
  *
@@ -84,17 +88,45 @@ const HOLD_AFTER_DISC = true;
  *  by uniform scale, so any mesh authored at full size will animate unchanged. */
 const DISC_RADIUS = 2.0;
 const DISC_GROW_SECONDS = 2.5;
-const DISC_COLOR = 0xbbbbbb;
+
+/** The platform mesh. Authored as a 1m disc standing UPRIGHT in XY, and NOT
+ *  centred on its own origin: X spans ±0.499 but Y runs 0→0.998, with the
+ *  0.229 thickness in Z. Laying it flat therefore needs a re-centre as well as
+ *  a rotation, or it grows off to one side.
+ *
+ *  Growth still drives the wrapper's scale 0→1, so the animation is unchanged
+ *  by the swap — rotation, fit and offset are applied once, to the child. */
+const DISC_URL = "./glbs/taichi_platform.glb";
+/** Fired the instant the platform starts growing, not when it finishes — the
+ *  sound is the ground arriving, and it has to land on the movement. */
+const DISC_SOUND_URL = "./sfx/effect_ground_1.mp3";
+const DISC_SOUND_VOLUME = 0.7;
+const DISC_SOURCE_DIAMETER = 0.998;
+/** Half the source thickness (its Z half-extent) — becomes the Y half-extent
+ *  once flat, and is how far to sink the mesh so its TOP sits on the ground. */
+const DISC_HALF_THICKNESS = 0.114;
+/** Half the source diameter axis (Y runs 0→0.998), which becomes Z once flat —
+ *  how far to shift it back so the disc's centre is the wrapper's origin. */
+const DISC_CENTER_OFFSET = 0.499;
 
 /** DEV ONLY. Start the journey at this phase instead of the beginning, so a
  *  scene can be checked without walking the whole sequence. null = normal. */
 const START_PHASE: PhaseId | null = null;
 
+/** Scene 2 — the moon. The .glb is a ~2m sphere authored at the origin, so
+ *  scale 1 is life-size-ish. Placed in front of wherever the player is standing
+ *  when scene 2 begins, same as the rail — the XR origin is not where they are
+ *  by then, since scene 0 made them walk. */
+const MOON_URL = "./glbs/moon.glb";
+const MOON_DISTANCE = 3.0; // metres ahead of the head
+const MOON_HEIGHT = 1.6; // metres, roughly eye level
+const MOON_SCALE = 1.0;
+
 // Encode each path segment so spaces survive AND subfolder "/" is preserved.
 const splatPath = (p: string) =>
   "./splats/" + p.split("/").map(encodeURIComponent).join("/");
 
-const REVEAL_SPLAT = "Scene1/Celestial Pathways Amidst Clouds.compressed.ply";
+const REVEAL_SPLAT = "Scene1/Enchanted Bamboo Forest Sanctuary.compressed.ply";
 
 export class DirectorSystem extends createSystem({}) {
   private readonly phases: PhaseId[] = ["breath", "disc", "reveal"];
@@ -104,15 +136,22 @@ export class DirectorSystem extends createSystem({}) {
   private dwell = 0;
   private breathElapsed = 0;
   private inCircleFrames = 0;
+  /** 一 has begun — set on the first XR frame after loading. */
+  private breathBegun = false;
+  /** Highest railProgress seen this session — diagnostic only. */
+  private railPeak = 0;
 
   private circle!: THREE.Mesh;
   private circleMat!: THREE.MeshBasicMaterial;
   private domOverlay: HTMLElement | null = null;
   private readonly heartbeat = new Heartbeat();
+  private readonly groundSound = new Sound(DISC_SOUND_URL, DISC_SOUND_VOLUME);
 
   private revealEntity: Entity | null = null;
 
-  private disc!: THREE.Mesh;
+  private moon: THREE.Object3D | null = null;
+
+  private disc!: THREE.Group;
   private discElapsed = 0;
   private discGrown = false;
 
@@ -136,26 +175,18 @@ export class DirectorSystem extends createSystem({}) {
     this.circle.position.set(0, 0.02, CIRCLE_FRONT_Z);
     this.circle.renderOrder = 10;
 
-    // Scene 1 — the ground disc. Flat placeholder, built at full size and
-    // scaled from zero, so growth costs nothing to animate.
-    const discGeo = new THREE.CircleGeometry(DISC_RADIUS, 96);
-    discGeo.rotateX(-Math.PI / 2);
-    this.disc = new THREE.Mesh(
-      discGeo,
-      new THREE.MeshBasicMaterial({
-        color: DISC_COLOR,
-        transparent: true,
-        opacity: 0.9,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      }),
-    );
-    // Under the player's feet, just above the floor so it doesn't z-fight.
-    this.disc.position.set(0, 0.01, 0);
+    // Scene 1 — the ground platform. An empty wrapper exists immediately so the
+    // phase logic never has to care whether the mesh has finished loading; the
+    // glb is parented into it when it arrives.
+    this.disc = new THREE.Group();
+    // Centred on the SEED CIRCLE, not the XR origin — the player walks forward
+    // into the circle, so the origin is a stride behind them by the time this
+    // grows. y = 0 exactly: the child is sunk so its top surface is the ground.
+    this.disc.position.set(0, 0, CIRCLE_FRONT_Z);
     this.disc.scale.setScalar(0);
-    this.disc.renderOrder = 9;
     this.disc.visible = false;
     this.player.add(this.disc);
+    this.loadDisc();
     this.circle.visible = false;
     this.player.add(this.circle);
 
@@ -167,6 +198,8 @@ export class DirectorSystem extends createSystem({}) {
       this.started = true;
       this.enterPhase(0);
       this.preloadReveal();
+      void this.heartbeat.load(); // decode during the load gate
+      void this.groundSound.load();
     }
 
     const phase = this.phases[this.index];
@@ -186,7 +219,21 @@ export class DirectorSystem extends createSystem({}) {
     // far as the player has reached. Nothing advances past this yet.
     const cube = this.world.getSystem(HandFollowCubeSystem);
     const reveal = this.world.getSystem(SplatRevealSystem);
-    if (cube && reveal) reveal.setProgress(cube.railProgress);
+    if (!cube || !reveal) return;
+
+    const p = cube.railProgress;
+    reveal.setProgress(p);
+
+    // Report the high-water mark, so it is visible whether the gesture is
+    // actually reaching 1.0 — a rail that stalls at 0.8 and a reveal that is
+    // mathematically short look identical from inside the headset.
+    if (p > this.railPeak + 0.02) {
+      this.railPeak = p;
+      console.log(
+        `[Director] rail ${p.toFixed(2)} → fully revealed to ` +
+          `${reveal.fullyRevealedRadius.toFixed(0)}m`,
+      );
+    }
   }
 
   /** Scene 1 — grow the disc from nothing to DISC_RADIUS under the player. */
@@ -215,12 +262,24 @@ export class DirectorSystem extends createSystem({}) {
       const reveal = this.world.getSystem(SplatRevealSystem);
       if (!reveal?.isReady) return;
       this.loaded = true;
-      console.log("[Director] world ready — lifting the white, ring in");
+      console.log("[Director] world ready — white lifted, waiting for XR");
+      // The overlay must come down even outside XR: it sits above the "enter"
+      // button, so leaving it up would make entering the session impossible.
       this.setLoadingVisible(false);
+    }
 
-      // DEV: jump straight to the scene under test. Done here rather than at
-      // startup so the splat is still loaded first — otherwise scene 2 opens
-      // on an empty world and looks broken.
+    // 一 does not begin until the player is actually inside the session. The
+    // Director runs on the flat page too, and without this the ring would pulse
+    // and the heartbeat would play to a desktop tab before anyone has entered —
+    // the sound arriving before its cause.
+    if (!this.world.session) return;
+
+    if (!this.breathBegun) {
+      this.breathBegun = true;
+
+      // DEV: jump straight to the scene under test. Held until now so the splat
+      // has loaded AND we are in XR — otherwise the scene plays out on the flat
+      // page before the player ever sees it.
       if (START_PHASE && START_PHASE !== "breath") {
         const target = this.phases.indexOf(START_PHASE);
         console.log(`[Director] START_PHASE — skipping to "${START_PHASE}"`);
@@ -229,6 +288,7 @@ export class DirectorSystem extends createSystem({}) {
         return;
       }
 
+      console.log("[Director] in XR — ring in, heartbeat in");
       this.circle.visible = true;
       this.breathElapsed = 0;
       this.inCircleFrames = 0;
@@ -237,8 +297,10 @@ export class DirectorSystem extends createSystem({}) {
     }
 
     // Pulse the circle in time with the audible heartbeat, so the light and the
-    // sound are one thing. HEARTBEAT_BPM/60 = beats per second → radians/s.
-    const w = (HEARTBEAT_BPM / 60) * Math.PI * 2;
+    // sound are one thing. The tempo comes from the decoded sample's own length
+    // (falling back to HEARTBEAT_BPM until it has loaded), so swapping the mp3
+    // re-syncs the ring automatically.
+    const w = (this.heartbeat.bpm / 60) * Math.PI * 2;
     const pulse = 0.5 + 0.5 * Math.sin(time * w);
     this.circleMat.opacity = OPACITY_MIN + (OPACITY_MAX - OPACITY_MIN) * pulse;
 
@@ -268,10 +330,88 @@ export class DirectorSystem extends createSystem({}) {
     this.revealEntity.addComponent(GaussianSplatLoader, {
       splatUrl: splatPath(REVEAL_SPLAT),
       animate: false,
-      flipUp: true, // this .ply exports Y-down
+      flipUp: true, // the compressed .ply exports Y-down
       enableLod: false, // DIAGNOSTIC (2026-07-18): re-run, now that it works
     });
     this.world.getSystem(SplatRevealSystem)?.setScene(this.revealEntity);
+  }
+
+  /** Load the platform mesh, lay it flat, and fit it to DISC_RADIUS. */
+  private loadDisc() {
+    new GLTFLoader().load(
+      DISC_URL,
+      (gltf) => {
+        const mesh = gltf.scene;
+        // Flipped onto the ground plane (+90°, so the intended face is up).
+        mesh.rotation.x = Math.PI / 2;
+
+        const fit = (DISC_RADIUS * 2) / DISC_SOURCE_DIAMETER;
+        mesh.scale.setScalar(fit);
+
+        // After the flip the disc spans z 0→0.998 and y ±0.114, so:
+        //   z: shift back half a diameter to centre it on the wrapper origin
+        //   y: sink half the thickness so the TOP surface lands at y = 0
+        //
+        // Both offsets live on the CHILD, inside the wrapper, so they scale
+        // with it — as the wrapper grows 0→1 the top stays exactly on the
+        // ground plane and the centre stays put, instead of the slab rising
+        // out of the floor.
+        mesh.position.set(
+          0,
+          -DISC_HALF_THICKNESS * fit,
+          -DISC_CENTER_OFFSET * fit,
+        );
+
+        this.disc.add(mesh);
+        console.log(
+          `[Director] platform loaded (${DISC_RADIUS * 2}m across, top at ground)`,
+        );
+      },
+      undefined,
+      (err) => console.warn("[Director] platform failed to load", err),
+    );
+  }
+
+  /** Load the scene-2 moon and park it hidden until that phase begins. */
+  private loadMoon() {
+    new GLTFLoader().load(
+      MOON_URL,
+      (gltf) => {
+        this.moon = gltf.scene;
+        this.moon.scale.setScalar(MOON_SCALE);
+        this.moon.visible = false;
+        this.player.add(this.moon);
+        console.log("[Director] moon loaded");
+      },
+      undefined,
+      (err) => console.warn("[Director] moon failed to load", err),
+    );
+  }
+
+  /**
+   * Put an object a fixed distance in front of the player's head.
+   *
+   * Same reasoning as the rail: everything here is parented to the XR origin,
+   * but scene 0 makes the player physically walk, so the origin is no longer
+   * where they are. Yaw only — the object stays at MOON_HEIGHT regardless of
+   * where they are looking vertically.
+   */
+  private placeAhead(obj: THREE.Object3D, distance: number, height: number) {
+    this.world.camera.getWorldPosition(this.camPos);
+    const local = this.player.worldToLocal(this.camPos.clone());
+
+    const dir = new THREE.Vector3();
+    this.world.camera.getWorldDirection(dir);
+    dir.y = 0;
+    if (dir.lengthSq() < 1e-8) dir.set(0, 0, -1); // looking straight up/down
+    dir.normalize();
+
+    obj.position.set(
+      local.x + dir.x * distance,
+      height,
+      local.z + dir.z * distance,
+    );
+    obj.lookAt(local.x, height, local.z);
   }
 
   /** Set the scene backdrop, reusing the existing Color so nothing allocates
@@ -320,16 +460,26 @@ export class DirectorSystem extends createSystem({}) {
     this.heartbeat.stop();
 
     if (phase === "disc") {
-      // Scene 1 — no splat. Just the disc opening under the player's feet.
+      // Scene 1 — no splat. Just the platform opening under the player's feet.
       cube?.setVisible(false);
       this.disc.visible = true;
       this.disc.scale.setScalar(0);
       this.discElapsed = 0;
       this.discGrown = false;
+      void this.groundSound.play();
     } else if (phase === "reveal") {
       // Scene 2 — the splat, revealed by hand. Start fully hidden; the rail
       // cube's progress is what brings it in, so the player does the revealing.
+      // Seat the rail in front of wherever the player actually ended up after
+      // stepping in — not where they started. Must happen before setVisible so
+      // it never shows for a frame in the wrong place.
+      if (!cube) {
+        console.error("[Director] HandFollowCubeSystem NOT REGISTERED");
+      } else {
+        cube.placeInFrontOf(this.world.camera);
+      }
       cube?.setVisible(true);
+
       if (this.revealEntity?.object3D) this.revealEntity.object3D.visible = true;
       this.world.getSystem(SplatRevealSystem)?.setProgress(0);
     }
