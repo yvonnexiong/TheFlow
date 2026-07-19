@@ -251,6 +251,25 @@ const DEBUG_HUD = true;
  *  scene can be checked without walking the whole sequence. null = normal. */
 const START_PHASE: PhaseId | null = null;
 
+/** The opening line, as an image. */
+const INTRO_TEXT_URL = "./introText.png";
+const INTRO_TEXT_ASPECT = 981 / 260;
+const INTRO_TEXT_WIDTH = 1.3; // metres — ~50 degrees across at INTRO_TEXT_DIST
+
+/** Placed relative to the HEAD rather than the origin, so it lands in front of
+ *  the eyes whatever the floor correction works out to and however tall the
+ *  player is. Positioned once, when it fades in — it does not follow, so
+ *  turning away leaves it behind rather than dragging it around. */
+const INTRO_TEXT_DIST = 1.4; // metres ahead
+const INTRO_TEXT_EYE_DROP = 0.06; // slightly below eye line, where reading sits
+
+/** The opening beats, in seconds. Text first and alone; only once it has
+ *  settled do the heartbeat and the ring arrive — so the line is read in
+ *  silence and the world answers it, rather than everything starting at once. */
+const INTRO_FADE_IN = 2.2;
+const INTRO_HOLD = 1.6;
+const INTRO_FADE_OUT = 1.2;
+
 /** Scene 2 — the moon. The .glb is a ~2m sphere authored at the origin, so
  *  scale 1 is life-size-ish. Placed in front of wherever the player is standing
  *  when scene 2 begins, same as the rail — the XR origin is not where they are
@@ -266,6 +285,18 @@ const splatPath = (p: string) =>
 
 const REVEAL_SPLAT = "Scene1/Enchanted Bamboo Forest Sanctuary.compressed.ply";
 
+/** Yaw applied to the bamboo world, radians. Turns it about so what faced away
+ *  from the player now faces them. Safe for the reveal: its wavefront is radial
+ *  from the origin, so spinning the world about Y leaves every splat at the
+ *  same distance and the reveal timing is unchanged. */
+// Was PI (a half turn); a further 90 degrees CLOCKWISE takes it to PI/2.
+// Three.js yaw is counter-clockwise seen from above, so clockwise subtracts.
+const REVEAL_SPLAT_YAW = Math.PI / 2;
+
+/** Extra height offset for the bamboo world, on top of the floor. Negative
+ *  sinks it — the capture's own ground does not sit exactly at its origin. */
+const REVEAL_SPLAT_Y = -0.3;
+
 export class DirectorSystem extends createSystem({}) {
   private readonly phases: PhaseId[] = ["breath", "disc", "reveal", "morph", "expand"];
   private index = 0;
@@ -276,6 +307,11 @@ export class DirectorSystem extends createSystem({}) {
   private inCircleFrames = 0;
   /** 一 has begun — set on the first XR frame after loading. */
   private breathBegun = false;
+  private introText: THREE.Mesh | null = null;
+  private introMat: THREE.MeshBasicMaterial | null = null;
+  /** textIn -> hold -> ring (circle + heartbeat) -> out (player stepped in). */
+  private introStage: "textIn" | "hold" | "ring" | "out" = "textIn";
+  private introTimer = 0;
   /** Highest railProgress seen this session — diagnostic only. */
   private railPeak = 0;
   /** Vertical correction for the whole world, resolved on the first XR frame.
@@ -369,6 +405,7 @@ export class DirectorSystem extends createSystem({}) {
 
     this.buildLoadingOverlay();
     if (DEBUG_HUD) this.buildHud();
+    this.buildIntroText();
   }
 
   update(delta: number, time: number) {
@@ -385,6 +422,7 @@ export class DirectorSystem extends createSystem({}) {
     }
 
     if (this.world.session) this.trackFloor(delta);
+    this.updateIntroFadeOut(delta);
     if (DEBUG_HUD && this.world.session) this.updateHud(delta);
 
     const phase = this.phases[this.index];
@@ -613,11 +651,40 @@ export class DirectorSystem extends createSystem({}) {
           `camera y=${this.camPos.y.toFixed(2)}m ` +
           `(≈0 means reference space fell back to "local" and ground is wrong)`,
       );
-      this.circle.visible = true;
-      this.breathElapsed = 0;
-      this.inCircleFrames = 0;
-      // The only sound in the void. Silent until this moment.
-      void this.heartbeat.start();
+      // The line comes first, alone. Circle and heartbeat wait.
+      this.introStage = "textIn";
+      this.introTimer = 0;
+      if (this.introText) {
+        this.placeIntroText();
+        this.introText.visible = true;
+      }
+    }
+
+    // --- the opening sequence, before the ring is live ---
+    if (this.introStage !== "ring") {
+      this.introTimer += delta;
+
+      if (this.introStage === "textIn") {
+        const t = Math.min(1, this.introTimer / INTRO_FADE_IN);
+        if (this.introMat) this.introMat.opacity = t;
+        if (t >= 1) {
+          this.introStage = "hold";
+          this.introTimer = 0;
+        }
+        return;
+      }
+
+      if (this.introStage === "hold" && this.introTimer >= INTRO_HOLD) {
+        this.introStage = "ring";
+        this.introTimer = 0;
+        this.circle.visible = true;
+        this.breathElapsed = 0;
+        this.inCircleFrames = 0;
+        // The only sound in the void. Silent until this moment.
+        void this.heartbeat.start();
+        console.log("[Director] line settled — ring and heartbeat in");
+      }
+      return;
     }
 
     // Pulse the circle in time with the audible heartbeat, so the light and the
@@ -642,9 +709,13 @@ export class DirectorSystem extends createSystem({}) {
 
     if (this.inCircleFrames >= IN_CIRCLE_FRAMES) {
       console.log("[Director] begin: stepped into the circle");
+      this.introStage = "out";
+      this.introTimer = 0;
       this.advance();
     } else if (railFallback) {
       console.log("[Director] begin: deliberate hand sweep (fallback)");
+      this.introStage = "out";
+      this.introTimer = 0;
       this.advance();
     }
   }
@@ -692,7 +763,8 @@ export class DirectorSystem extends createSystem({}) {
     this.revealEntity = this.world.createTransformEntity();
     if (this.revealEntity.object3D) {
       this.revealEntity.object3D.visible = false;
-      this.revealEntity.object3D.position.y = this.floorOffset;
+      this.revealEntity.object3D.position.y = this.floorOffset + REVEAL_SPLAT_Y;
+      this.revealEntity.object3D.rotation.y = REVEAL_SPLAT_YAW;
     }
     this.revealEntity.addComponent(GaussianSplatLoader, {
       splatUrl: splatPath(REVEAL_SPLAT),
@@ -878,6 +950,69 @@ export class DirectorSystem extends createSystem({}) {
     return halo;
   }
 
+  /** The opening line, on a plane above the seed circle. */
+  private buildIntroText() {
+    const tex = new THREE.TextureLoader().load(INTRO_TEXT_URL);
+    tex.colorSpace = THREE.SRGBColorSpace;
+
+    this.introMat = new THREE.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      depthTest: false, // reads over the world regardless of what is behind
+      side: THREE.DoubleSide,
+    });
+
+    this.introText = new THREE.Mesh(
+      new THREE.PlaneGeometry(
+        INTRO_TEXT_WIDTH,
+        INTRO_TEXT_WIDTH / INTRO_TEXT_ASPECT,
+      ),
+      this.introMat,
+    );
+    // Position is set when it appears — see placeIntroText().
+    this.introText.renderOrder = 15_000;
+    this.introText.visible = false;
+    this.player.add(this.introText);
+  }
+
+  /** Put the line in front of the player's eyes, once, as it appears. */
+  private placeIntroText() {
+    if (!this.introText) return;
+
+    this.world.camera.getWorldPosition(this.camPos);
+    const head = this.player.worldToLocal(this.camPos.clone());
+
+    const dir = new THREE.Vector3();
+    this.world.camera.getWorldDirection(dir);
+    dir.y = 0;
+    if (dir.lengthSq() < 1e-8) dir.set(0, 0, -1);
+    dir.normalize();
+
+    this.introText.position.set(
+      head.x + dir.x * INTRO_TEXT_DIST,
+      head.y - INTRO_TEXT_EYE_DROP,
+      head.z + dir.z * INTRO_TEXT_DIST,
+    );
+    // Face the player. Yaw only, so the line stays level rather than tilting
+    // to meet a downward glance.
+    this.introText.rotation.y = Math.atan2(-dir.x, -dir.z);
+  }
+
+  /** Fade the line away once the player has stepped in. Driven from update()
+   *  rather than updateBreath, so it keeps fading after the phase has moved on
+   *  — otherwise it would freeze at whatever opacity it had reached. */
+  private updateIntroFadeOut(delta: number) {
+    if (this.introStage !== "out" || !this.introMat || !this.introText) return;
+    if (!this.introText.visible) return;
+
+    this.introTimer += delta;
+    const t = Math.min(1, this.introTimer / INTRO_FADE_OUT);
+    this.introMat.opacity = 1 - t;
+    if (t >= 1) this.introText.visible = false;
+  }
+
   /** Build the in-world debug readout. Parented to the player so it travels
    *  with them; re-aimed each frame so it stays in view. */
   private buildHud() {
@@ -1049,7 +1184,9 @@ export class DirectorSystem extends createSystem({}) {
     const y = this.floorOffset;
     this.circle.position.y = 0.02 + y;
     this.disc.position.y = y;
-    if (this.revealEntity?.object3D) this.revealEntity.object3D.position.y = y;
+    if (this.revealEntity?.object3D) {
+      this.revealEntity.object3D.position.y = y + REVEAL_SPLAT_Y;
+    }
     if (this.morphEntity?.object3D) this.morphEntity.object3D.position.y = y;
     if (this.expandEntity?.object3D) this.expandEntity.object3D.position.y = y;
     this.world.getSystem(HandFollowCubeSystem)?.setFloorOffset(y);

@@ -41,11 +41,44 @@ import { HandFollowCubeSystem } from "./handFollowCube.js";
  *  by this value exp(-t) is ~0.007, so it is fully formed. */
 const UNROLL_T_MAX = 5.0;
 
+/**
+ * Shapes how the unroll clock maps onto the gesture, as a power curve.
+ *
+ * 1.0 is linear, and linear looked wrong: Unroll's own thresholds make a world
+ * collapse quickly once t starts falling, so an evenly-descending t spent most
+ * of the middle of the gesture showing an empty void — 80% of the world gone by
+ * a third of the way across.
+ *
+ * Below 1 the curve is concave: t stays high through most of the travel and
+ * only falls away near the end, so each world holds its substance far longer
+ * and the transition happens in a shorter, more decisive window.
+ *
+ * Lower = more world visible through the middle. 0.35 keeps roughly 70% of the
+ * clock at the point the linear version had already reached 40%.
+ */
+const UNROLL_CURVE = 0.35;
+
+/**
+ * How much the two halves overlap, in gesture units.
+ *
+ * Strictly sequential means there is one instant, exactly at 0.5, where the
+ * outgoing world has fully gone and the incoming one has not started — a frame
+ * of pure nothing. A small overlap lets the next world begin unrolling before
+ * the last has finished leaving, which reads as one becoming the other rather
+ * than as a gap.
+ *
+ * This is the ONLY window where both worlds render, so it is deliberately
+ * narrow — widening it trades the performance the sequential design bought.
+ */
+const UNROLL_OVERLAP = 0.1;
+
 /** Characteristic scene half-height in metres, used to normalise the effect
  *  into the unit-ish range Spark's example assumes. Roughly half the world's
  *  vertical span — these scenes run 50-115m, so ~25 sits about right. Larger
  *  values make the twist gentler and the reveal sweep slower up the scene. */
 const UNROLL_HEIGHT = 25.0;
+
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
 export class SplatMorphSystem extends createSystem({}) {
   private sceneEntities: [Entity, Entity] | null = null;
@@ -106,20 +139,26 @@ export class SplatMorphSystem extends createSystem({}) {
     const p = Math.min(1, Math.max(0, value));
     this.phase.value = p;
 
-    // First half winds A up into nothing; second half unrolls B out of it.
-    // Mapped so each world gets the FULL unroll animation across its own half
-    // rather than half of one.
-    const outT = UNROLL_T_MAX * (1 - Math.min(1, p * 2));
-    const inT = UNROLL_T_MAX * Math.max(0, p * 2 - 1);
-    this.unrollT[0].value = outT;
-    this.unrollT[1].value = inT;
+    // A leaves across [0, aEnd]; B arrives across [bStart, 1]. They overlap by
+    // UNROLL_OVERLAP around the midpoint so there is never a frame of nothing.
+    const half = 0.5 + UNROLL_OVERLAP / 2;
+    const aEnd = half;
+    const bStart = 0.5 - UNROLL_OVERLAP / 2;
 
-    // The real saving: skip the dormant world entirely. A zero-alpha splat is
-    // still sorted and rasterised — an invisible mesh is not submitted at all,
-    // which halves the per-frame cost through the whole transition.
+    // 1 = fully present, 0 = fully wound away, before shaping.
+    const aRaw = clamp01((aEnd - p) / aEnd);
+    const bRaw = clamp01((p - bStart) / (1 - bStart));
+
+    // The power curve is what puts world back into the middle of the gesture.
+    this.unrollT[0].value = UNROLL_T_MAX * Math.pow(aRaw, UNROLL_CURVE);
+    this.unrollT[1].value = UNROLL_T_MAX * Math.pow(bRaw, UNROLL_CURVE);
+
+    // The real saving: skip a world entirely once it has nothing to show. A
+    // zero-alpha splat is still sorted and rasterised — an invisible mesh is
+    // not submitted at all. Both are only ever on screen inside the overlap.
     if (this.meshes.length === 2) {
-      this.meshes[0].visible = p < 0.5;
-      this.meshes[1].visible = p >= 0.5;
+      this.meshes[0].visible = aRaw > 0;
+      this.meshes[1].visible = bRaw > 0;
     }
   }
 

@@ -64,15 +64,18 @@ const SWEEP_ARC = 0.13;
 
 // 五 expand: the hands part again, travelling OUTWARD from where they met.
 //
-// Each starts offset from where the previous gesture ended — the right a
-// little lower and further right, the left a little higher and further left —
-// so the new rails are visibly not the old ones, and the hands are already
-// past each other before they begin. Picking up exactly where they stopped
-// would read as the same gesture continuing.
+// Both run on a single level, starting apart and opening further apart. The
+// sweep staggered its two lines vertically to stop the hands colliding as they
+// converged; here they only ever separate, so there is nothing to avoid and one
+// shared line reads as a single opening rather than two parallel moves.
 const EXPAND_INNER = 0.1; // where each hand starts, either side of centre
-const EXPAND_OUTER = 0.42; // where it ends, out at the edge of reach
-const EXPAND_Y_RIGHT = 1.2; // lower than the sweep's right line (1.32)
-const EXPAND_Y_LEFT = 1.22; // higher than the sweep's left line (1.10)
+const EXPAND_OUTER = 0.6; // where it ends, out near the limit of easy reach
+
+/** Both hands travel on ONE level here, unlike the sweep's staggered lines.
+ *  They start already apart and move further apart, so they never approach each
+ *  other — the vertical stagger that kept them from crossing has no work to do,
+ *  and a single line reads as one opening gesture rather than two. */
+const EXPAND_Y = 1.22;
 
 const MARKER_SIZE = 0.14;
 
@@ -446,6 +449,12 @@ class Rail {
         const c = (m as THREE.MeshStandardMaterial).clone();
         c.color.setHex(tint.color);
         c.emissive.setHex(tint.emissive);
+        // Cull back faces. Both models ship doubleSided, and drawOverSplats
+        // gives everything AlwaysDepth so the markers stay readable over the
+        // splat world — but that combination lets the sphere's FAR triangles
+        // pass the depth test and paint over its near ones, so a solid ball
+        // renders as a hollow shell showing its own interior.
+        c.side = THREE.FrontSide;
         return c;
       });
       mesh.material = cloned.length === 1 ? cloned[0] : cloned;
@@ -583,13 +592,13 @@ export class HandFollowCubeSystem extends createSystem({}) {
       axis: "x",
       from: +EXPAND_INNER,
       to: +EXPAND_OUTER,
-      cross: EXPAND_Y_RIGHT,
+      cross: EXPAND_Y,
     });
     this.rails.left.configure({
       axis: "x",
       from: -EXPAND_INNER,
       to: -EXPAND_OUTER,
-      cross: EXPAND_Y_LEFT,
+      cross: EXPAND_Y,
     });
   }
 
