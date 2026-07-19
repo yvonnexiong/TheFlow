@@ -1,0 +1,62 @@
+<style>
+  .panel-container {
+    align-items: center;
+    padding: 3;
+    width: 50;
+    display: flex;
+    flex-direction: column;
+    background-color: #0d0221;
+    border-color: #7b2ff2;
+    border-width: 0.2;
+    border-radius: 2;
+  }
+
+  .logo {
+    width: 45;
+    height: 12;
+    object-fit: contain;
+  }
+
+  .sub-heading {
+    font-size: 1.8;
+    color: #c4b5fd;
+    text-align: center;
+    margin-top: 0.5;
+  }
+
+  .divider {
+    width: 80%;
+    height: 0.1;
+    margin-top: 1.5;
+    margin-bottom: 1.5;
+    background-color: #7b2ff2;
+  }
+
+  .event-line {
+    font-size: 1.6;
+    color: #fbbf24;
+    text-align: center;
+    font-weight: medium;
+  }
+
+  #xr-button {
+    width: 100%;
+    padding: 1.5;
+    margin-top: 2;
+    background-color: #fbbf24;
+    color: #0d0221;
+    border-radius: 1.5;
+    border-width: 0;
+    font-size: 2.5;
+    font-weight: bold;
+    text-align: center;
+    cursor: pointer;
+  }
+</style>
+<div class="panel-container">
+  <img src="/SensAI-logo.png" alt="SensAI" class="logo" />
+  <span class="sub-heading">WebXR + SparkJS Template</span>
+  <div class="divider"></div>
+  <span class="event-line">sensaihack.com</span>
+  <button id="xr-button">Enter XR</button>
+</div>
