@@ -450,7 +450,7 @@ export class DirectorSystem extends createSystem({}) {
   /** Whichever loop is playing, and whether the completion one-shot has fired
    *  for the current gesture (reset on entering each phase). */
   private gestureLoop: Sound | null = null;
-  private gestureCompleteFired = false;;
+  private gestureCompleteFired = false;
 
 
   private revealEntity: Entity | null = null;
