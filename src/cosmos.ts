@@ -39,8 +39,11 @@ const ORBIT_SCALE = 0.3;
  *  dome overhead they have to crane up into. A little above the eye line is
  *  enough to feel celestial; directly overhead means most of it is never seen.
  */
-const CENTRE_Y = 11;
-const CENTRE_Z = -78;
+// Centred ON the player, so the orbits wrap all the way around rather than
+// standing in front. A little above eye level (CENTRE_Y) so the system reads as
+// overhead sky as well as around, and CENTRE_Z = 0 so half of it is behind.
+const CENTRE_Y = 4;
+const CENTRE_Z = 0;
 
 /** How far the whole system turns across a full gesture, in revolutions.
  *
@@ -78,9 +81,10 @@ const PLANET_COLORS = [
  *  read as a body with a near and a far side. */
 const PLANET_EMISSIVE_SCALE = 0.34;
 
-/** Sphere tessellation. Modest on purpose: at these distances the extra rings
- *  of a high-poly sphere are invisible, and there are seventeen of them. */
-const PLANET_SEGMENTS = 20;
+/** Sphere tessellation. Higher now that the planets sit closer and larger —
+ *  at 20 the silhouette was visibly faceted. Still one draw call each, so this
+ *  is cheap. */
+const PLANET_SEGMENTS = 48;
 
 /**
  * Optional planet textures, cycled across the bodies alongside the colours.
@@ -132,76 +136,84 @@ const ORBITS: {
   bodies: [number, number][];
 }[] = [
   {
-    radius: 34,
-    tilt: 0.42,
+    radius: 30,
+    tilt: 0.12,
     yaw: 0.0,
-    rate: 1.6,
+    rate: 1.7,
     bodies: [
-      [0.6, 1.5],
-      [3.4, 0.8],
+      [0.6, 2.2],
+      [2.4, 0.7],
+      [4.3, 1.3],
     ],
   },
   {
-    radius: 48,
-    tilt: 0.18,
+    radius: 42,
+    tilt: 0.28,
     yaw: 1.1,
-    rate: 1.25,
+    rate: 1.35,
     bodies: [
-      [2.4, 2.6],
-      [4.9, 1.1],
-      [0.9, 1.8],
+      [1.1, 0.9],
+      [2.9, 3.8],
+      [4.7, 1.4],
+      [5.8, 0.6],
     ],
   },
   {
-    radius: 61,
-    tilt: 0.55,
+    radius: 55,
+    tilt: 0.08,
     yaw: 2.3,
-    rate: 1.0,
+    rate: 1.1,
     bodies: [
-      [1.2, 3.4],
-      [4.0, 1.2],
+      [0.4, 5.4],
+      [2.1, 1.0],
+      [3.6, 2.0],
+      [5.1, 0.8],
     ],
   },
   {
-    radius: 76,
-    tilt: 0.3,
+    radius: 70,
+    tilt: 0.34,
     yaw: 0.7,
-    rate: 0.85,
+    rate: 0.9,
     bodies: [
-      [3.8, 2.0],
-      [0.2, 1.4],
-      [5.4, 3.6],
+      [1.6, 1.5],
+      [3.3, 7.5],
+      [4.9, 1.1],
     ],
   },
   {
-    radius: 92,
-    tilt: 0.62,
+    radius: 86,
+    tilt: 0.18,
     yaw: 3.0,
-    rate: 0.7,
+    rate: 0.74,
     bodies: [
-      [5.4, 4.6],
-      [2.2, 1.5],
+      [0.9, 3.0],
+      [2.6, 0.9],
+      [4.2, 4.4],
+      [5.6, 1.7],
     ],
   },
   {
-    radius: 110,
+    radius: 104,
     tilt: 0.24,
     yaw: 1.8,
-    rate: 0.58,
+    rate: 0.6,
     bodies: [
-      [2.9, 3.0],
-      [0.5, 1.3],
-      [4.6, 5.2],
+      [1.3, 9.0],
+      [3.0, 1.2],
+      [5.0, 2.6],
     ],
   },
   {
-    radius: 132,
-    tilt: 0.48,
+    radius: 124,
+    tilt: 0.14,
     yaw: 4.2,
-    rate: 0.45,
+    rate: 0.48,
     bodies: [
-      [4.4, 5.8],
-      [1.7, 2.2],
+      [0.7, 6.2],
+      [2.3, 1.4],
+      [4.0, 3.4],
+      [5.5, 0.9],
     ],
   },
 ];

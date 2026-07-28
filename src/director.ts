@@ -150,7 +150,7 @@ const DISC_Y_NUDGE = -0.46;
 /** Fired the instant the platform starts growing, not when it finishes — the
  *  sound is the ground arriving, and it has to land on the movement. */
 const DISC_SOUND_URL = "./sfx/effect_ground_1.mp3";
-const DISC_SOUND_VOLUME = 0.7;
+const DISC_SOUND_VOLUME = 0.5; // was 0.7 — it jumped out ahead of everything else
 
 /** Scene 2 — a swish when the right hand moves with intent.
  *
@@ -163,41 +163,33 @@ const DISC_SOUND_VOLUME = 0.7;
  *  cooldown bounds how often it can fire even when speed genuinely oscillates
  *  across the whole gap. */
 /**
- * A distinct swish per gesture, keyed by phase.
+ * Generic gesture audio — the SAME design for every gesture, not one sound per
+ * phase.
  *
- * They were sharing one file: 三 had its own, and every gesture after it reused
- * the 四 sound. Four different movements answering with the same noise makes
- * them read as the same event repeated, which undercuts a piece whose whole
- * shape is one gesture changing what it means.
+ * A single state machine driven by how many markers are held and whether the
+ * gesture has finished:
+ *   one hand on its marker   → ONE_HAND loops
+ *   both hands on            → BOTH_HANDS loops (replaces ONE_HAND)
+ *   both carried to the end  → COMPLETE plays once, the loops stop
+ *
+ * So the sound describes what the hands are doing, continuously, rather than
+ * firing on hand speed — which meant nothing was heard once incidental
+ * movement was gated out.
  */
-const GESTURE_SOUNDS: Partial<Record<PhaseId, string>> = {
-  reveal: "./sfx/sound_gestue_2.mp3",
-  morph: "./sfx/sound_gestue_5.mp3",
-  expand: "./sfx/sound_gestue_6.mp3",
-  resonance: "./sfx/sound_gestue_7.mp3",
-  return: "./sfx/sound_gestue_8.mp3",
-};
-const GESTURE_SOUND_VOLUME = 0.5;
-
-/** Speed thresholds, shared by all of them.
- *
- *  Taken from what tracked hands actually do: at rest they jitter at 0.05-0.15
- *  m/s, casual repositioning is 0.3-0.5, and a deliberate sweep is 1-2. Firing
- *  at 0.9 sits clear of the first two.
- *
- *  Two separate guards, because they catch different failures: the hysteresis
- *  gap stops a hand hovering near the threshold from stuttering, and the
- *  cooldown bounds how often it can fire even when speed genuinely oscillates
- *  across the whole gap. */
-const GESTURE_SPEED_ON = 0.9; // m/s — fire above this
-const GESTURE_SPEED_OFF = 0.4; // m/s — re-arm below this
-const GESTURE_COOLDOWN = 0.4; // seconds, minimum between triggers
+const GESTURE_ONE_HAND_URL = "./sfx/sound_gestue_9.mp3";
+const GESTURE_BOTH_HANDS_URL = "./sfx/sound_gestue_7.mp3";
+const GESTURE_COMPLETE_URL = "./sfx/sound_gestue_2.mp3";
+const GESTURE_LOOP_VOLUME = 0.6;
+const GESTURE_COMPLETE_VOLUME = 0.7;
+/** Short crossfade between the one/both loops — they are effects, not ambience,
+ *  and should track the hands closely. */
+const GESTURE_LOOP_FADE = 0.2;
 
 /** 四 morph — the world the reveal transitions INTO. */
-const MORPH_SPLAT = "Scene2/newMoutains.spz";
+const MORPH_SPLAT = "Scene2/Celestial Taoist Mountain Sanctuary.compressed.ply";
 
 /** 五 expand — the world the mountains transition into in turn. */
-const EXPAND_SPLAT = "Scene3/Celestial Pathways Amidst Clouds.spz";
+const EXPAND_SPLAT = "Scene3/Celestial Gateway to Floating Realms.spz";
 
 /** Scene 5 返 — the world the celestial one returns into.
  *
@@ -239,8 +231,12 @@ const COSMOS_FADE_SECONDS = 3.5;
 const SCENE_MUSIC: Partial<Record<PhaseId, string>> = {
   expand: "./sfx/bgm_scene_ink.mp3", // standing in the mountains
   resonance: "./sfx/bgm_scene_cosmo.mp3", // the cosmos
-  return: "./sfx/sound_gestue_1_last_scene.mp3", // the return to 道
 };
+
+/** Not keyed by phase: this comes up the moment the bamboo is fully revealed,
+ *  which happens mid-三 rather than on a phase boundary. Shares the same
+ *  crossfade, so the mountains' music (五) fades it out in turn. */
+const REVEAL_MUSIC_URL = "./sfx/taichi_scene_bamboo.wav";
 const MUSIC_VOLUME = 0.45;
 const MUSIC_FADE_IN = 3.0;
 /** Overlap on the handover. Longer than the fade-in so the outgoing track is
@@ -365,7 +361,7 @@ const MOON_SCALE = 1.0;
 const splatPath = (p: string) =>
   "./splats/" + p.split("/").map(encodeURIComponent).join("/");
 
-const REVEAL_SPLAT = "Scene1/Enchanted Bamboo Forest Sanctuary.compressed.ply";
+const REVEAL_SPLAT = "Scene1/Enchanted Bamboo Forest Sanctuary_lowRes.spz";
 
 /** Yaw applied to the bamboo world, radians. Turns it about so what faced away
  *  from the player now faces them. Safe for the reveal: its wavefront is radial
@@ -373,11 +369,11 @@ const REVEAL_SPLAT = "Scene1/Enchanted Bamboo Forest Sanctuary.compressed.ply";
  *  same distance and the reveal timing is unchanged. */
 // Was PI (a half turn); a further 90 degrees CLOCKWISE takes it to PI/2.
 // Three.js yaw is counter-clockwise seen from above, so clockwise subtracts.
-const REVEAL_SPLAT_YAW = Math.PI / 2;
+const REVEAL_SPLAT_YAW = 0; // no rotation
 
 /** Extra height offset for the bamboo world, on top of the floor. Negative
  *  sinks it — the capture's own ground does not sit exactly at its origin. */
-const REVEAL_SPLAT_Y = -0.3;
+const REVEAL_SPLAT_Y = -0.5; // 20cm lower than before
 
 export class DirectorSystem extends createSystem({}) {
   private readonly phases: PhaseId[] = [
@@ -435,14 +431,26 @@ export class DirectorSystem extends createSystem({}) {
   /** One looping Sound per scored scene, and whichever is currently playing. */
   private readonly sceneMusic = new Map<PhaseId, Sound>();
   private playingMusic: Sound | null = null;
-  /** One Sound and one rising-edge state per gesture, built from
-   *  GESTURE_SOUNDS. Kept separate per phase so crossing into the next gesture
-   *  starts fresh rather than inheriting the last one's armed state. */
-  private readonly gestureSounds = new Map<PhaseId, Sound>();
-  private readonly gestureState = new Map<
-    PhaseId,
-    { armed: boolean; cooldown: number }
-  >();
+  private revealMusic: Sound | null = null;
+  private bambooMusicStarted = false;
+  private readonly gestureOneHand = new Sound(
+    GESTURE_ONE_HAND_URL,
+    GESTURE_LOOP_VOLUME,
+    true,
+  );
+  private readonly gestureBothHands = new Sound(
+    GESTURE_BOTH_HANDS_URL,
+    GESTURE_LOOP_VOLUME,
+    true,
+  );
+  private readonly gestureComplete = new Sound(
+    GESTURE_COMPLETE_URL,
+    GESTURE_COMPLETE_VOLUME,
+  );
+  /** Whichever loop is playing, and whether the completion one-shot has fired
+   *  for the current gesture (reset on entering each phase). */
+  private gestureLoop: Sound | null = null;
+  private gestureCompleteFired = false;;
 
 
   private revealEntity: Entity | null = null;
@@ -515,12 +523,11 @@ export class DirectorSystem extends createSystem({}) {
         this.sceneMusic.set(phase as PhaseId, track);
         void track.load();
       }
-      for (const [phase, url] of Object.entries(GESTURE_SOUNDS)) {
-        const sound = new Sound(url, GESTURE_SOUND_VOLUME);
-        this.gestureSounds.set(phase as PhaseId, sound);
-        this.gestureState.set(phase as PhaseId, { armed: true, cooldown: 0 });
-        void sound.load();
-      }
+      this.revealMusic = new Sound(REVEAL_MUSIC_URL, MUSIC_VOLUME, true);
+      void this.revealMusic.load();
+      void this.gestureOneHand.load();
+      void this.gestureBothHands.load();
+      void this.gestureComplete.load();
     }
 
     if (this.world.session) this.trackFloor(delta);
@@ -549,7 +556,7 @@ export class DirectorSystem extends createSystem({}) {
       if (!rails || !morph || !this.returnEntity) return;
 
       morph.setPhase(rails.bothProgress);
-      this.updateGestureSound("return", rails.rightHandSpeed, delta);
+      this.updateGestureAudio(rails.bothProgress >= GESTURE_COMPLETE_AT);
 
       if (morph.isReady && this.returnEntity.object3D?.visible === false) {
         this.returnEntity.object3D.visible = true;
@@ -571,7 +578,7 @@ export class DirectorSystem extends createSystem({}) {
       const cosmos = this.world.getSystem(CosmosSystem);
       if (!rails) return;
       cosmos?.setProgress(rails.bothProgress);
-      this.updateGestureSound("resonance", rails.rightHandSpeed, delta);
+      this.updateGestureAudio(rails.bothProgress >= GESTURE_COMPLETE_AT);
       this.updateHandoff(rails.bothProgress >= GESTURE_COMPLETE_AT, delta, rails);
       return;
     }
@@ -584,7 +591,7 @@ export class DirectorSystem extends createSystem({}) {
       if (!rails || !morph) return;
 
       morph.setPhase(rails.bothProgress);
-      this.updateGestureSound("expand", rails.rightHandSpeed, delta);
+      this.updateGestureAudio(rails.bothProgress >= GESTURE_COMPLETE_AT);
 
       if (morph.isReady && this.expandEntity?.object3D?.visible === false) {
         this.expandEntity.object3D.visible = true;
@@ -603,7 +610,7 @@ export class DirectorSystem extends createSystem({}) {
       if (!rails || !morph) return;
 
       morph.setPhase(rails.bothProgress);
-      this.updateGestureSound("morph", rails.rightHandSpeed, delta);
+      this.updateGestureAudio(rails.bothProgress >= GESTURE_COMPLETE_AT);
 
       // Reveal scene B only once the dissolve shader owns it. At phase 0 the
       // modifier renders it fully dissolved, so there is nothing to see — but
@@ -627,7 +634,14 @@ export class DirectorSystem extends createSystem({}) {
     const p = cube.railProgress;
     reveal.setProgress(p);
 
-    this.updateGestureSound("reveal", cube.rightHandSpeed, delta);
+    this.updateGestureAudio(reveal.isRevealed);
+
+    // The bamboo's music arrives when the world does — on the frame the reveal
+    // first reaches full, not when the phase later hands off.
+    if (reveal.isRevealed && !this.bambooMusicStarted && this.revealMusic) {
+      this.bambooMusicStarted = true;
+      this.crossfadeMusic(this.revealMusic, "bamboo revealed");
+    }
 
     this.updateHandoff(reveal.isRevealed, delta, cube);
 
@@ -674,7 +688,19 @@ export class DirectorSystem extends createSystem({}) {
       // planets slowing and the stars dimming is the RESPONSE to the gesture
       // completing, so it has to start on the same beat rather than after the
       // markers have already gone.
+      // 六 resonance: the orbital sky dissolves on this flare (stars dimming as
+      // the gesture completes). The MUSIC does NOT stop here — the celestial
+      // world is still present all through resonance and only dissolves in the
+      // final 返 gesture, so cosmo carries until then.
       if (this.phases[this.index] === "resonance") this.cosmosFading = true;
+
+      // 返 return: this flare is the last gesture reaching its end, the celestial
+      // world having just dissolved into 道. NOW the music goes — nothing is
+      // scored after it, and the ending is silence.
+      if (this.phases[this.index] === "return") {
+        this.playingMusic?.stop(COSMOS_FADE_SECONDS);
+        this.playingMusic = null;
+      }
       console.log(`[Director] ${this.phases[this.index]} complete — markers flare`);
       return;
     }
@@ -714,22 +740,36 @@ export class DirectorSystem extends createSystem({}) {
    * Rising-edge rather than level-triggered: a level test would retrigger every
    * frame the hand stays fast, which at 72Hz is a machine gun.
    */
-  private updateGestureSound(which: PhaseId, speed: number, delta: number) {
-    const state = this.gestureState.get(which);
-    const sound = this.gestureSounds.get(which);
-    if (!state || !sound) return;
-
-    state.cooldown = Math.max(0, state.cooldown - delta);
-
-    if (state.armed && speed >= GESTURE_SPEED_ON) {
-      if (state.cooldown === 0) {
-        void sound.play();
-        state.cooldown = GESTURE_COOLDOWN;
+  /**
+   * Drive the gesture audio from how many markers are held and whether the
+   * gesture is finished. Called every frame of a rail phase.
+   */
+  private updateGestureAudio(complete: boolean) {
+    if (complete) {
+      if (!this.gestureCompleteFired) {
+        this.gestureCompleteFired = true;
+        void this.gestureComplete.play();
+        this.setGestureLoop(null); // the loops give way to the completion
       }
-      state.armed = false;
-    } else if (!state.armed && speed <= GESTURE_SPEED_OFF) {
-      state.armed = true;
+      return;
     }
+
+    const held = this.world.getSystem(HandFollowCubeSystem)?.heldCount ?? 0;
+    this.setGestureLoop(
+      held >= 2
+        ? this.gestureBothHands
+        : held === 1
+          ? this.gestureOneHand
+          : null,
+    );
+  }
+
+  /** Swap the running loop, short-crossfading between them. */
+  private setGestureLoop(next: Sound | null) {
+    if (next === this.gestureLoop) return;
+    this.gestureLoop?.stop(GESTURE_LOOP_FADE);
+    this.gestureLoop = next;
+    next?.play(GESTURE_LOOP_FADE);
   }
 
 
@@ -900,6 +940,7 @@ export class DirectorSystem extends createSystem({}) {
     this.morphEntity.addComponent(GaussianSplatLoader, {
       splatUrl: splatPath(MORPH_SPLAT),
       animate: false,
+      flipUp: true, // the compressed .ply exports Y-down, like the bamboo
     });
     // Compile its morph shader now rather than at the transition — see
     // SplatMorphSystem.prewarm().
@@ -953,7 +994,7 @@ export class DirectorSystem extends createSystem({}) {
     this.revealEntity.addComponent(GaussianSplatLoader, {
       splatUrl: splatPath(REVEAL_SPLAT),
       animate: false,
-      flipUp: true, // the compressed .ply exports Y-down
+      flipUp: false, // the .spz export is already Y-up (unlike the .ply)
       enableLod: false, // DIAGNOSTIC (2026-07-18): re-run, now that it works
     });
     this.world.getSystem(SplatRevealSystem)?.setScene(this.revealEntity);
@@ -1193,12 +1234,16 @@ export class DirectorSystem extends createSystem({}) {
    */
   private startSceneMusic(phase: PhaseId) {
     const next = this.sceneMusic.get(phase);
-    if (!next || next === this.playingMusic) return;
+    if (next) this.crossfadeMusic(next, phase);
+  }
 
+  /** Bring `next` up and fade whatever was playing under it. */
+  private crossfadeMusic(next: Sound, label: string) {
+    if (next === this.playingMusic) return;
     this.playingMusic?.stop(MUSIC_FADE_OUT);
     this.playingMusic = next;
     void next.play(MUSIC_FADE_IN);
-    console.log(`[Director] music: ${phase}`);
+    console.log(`[Director] music: ${label}`);
   }
 
   /** Dissolve the cosmos after the final gesture. */
@@ -1467,6 +1512,8 @@ export class DirectorSystem extends createSystem({}) {
     // first's "done" and never flare.
     this.handoff = "idle";
     this.handoffTimer = 0;
+    this.gestureCompleteFired = false;
+    this.setGestureLoop(null);
 
     this.startSceneMusic(phase);
 

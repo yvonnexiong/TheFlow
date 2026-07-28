@@ -712,8 +712,13 @@ export class HandFollowCubeSystem extends createSystem({}) {
   }
 
   /** True while either hand is holding its marker. */
-  private get anyHeld(): boolean {
+  get anyHeld(): boolean {
     return this.rails.left.isHeld || this.rails.right.isHeld;
+  }
+
+  /** How many markers are held right now, 0..2 — drives the gesture audio. */
+  get heldCount(): number {
+    return (this.rails.left.isHeld ? 1 : 0) + (this.rails.right.isHeld ? 1 : 0);
   }
 
   /**

@@ -39,24 +39,28 @@ import { HandFollowCubeSystem } from "./handFollowCube.js";
 /** Peak outward scatter distance, in metres, at mid-transition. */
 /** How far the unroll clock runs. At t=0 a world is fully wound up and gone;
  *  by this value exp(-t) is ~0.007, so it is fully formed. */
-const UNROLL_T_MAX = 5.0;
+// High enough that exp(-t) is genuinely ~0 at the end of a gesture, so a fully
+// arrived world is EXACTLY its original — not shrunk or twisted. At t=5 the
+// residual was ~1.3% shrink and a ~25 degree twist at the top of the scene;
+// at t=9, exp(-9)=1.2e-4, so both are imperceptible.
+const UNROLL_T_MAX = 9.0;
 
 /**
- * Shapes how the unroll clock maps onto the gesture, as a power curve.
+ * Separate curve shapes for the world LEAVING and the world ARRIVING.
  *
- * 1.0 is linear, and linear looked wrong: Unroll's own thresholds make a world
- * collapse quickly once t starts falling, so an evenly-descending t spent most
- * of the middle of the gesture showing an empty void — 80% of the world gone by
- * a third of the way across.
+ * They must differ, and one shared curve was the bug behind "the arriving world
+ * is not quite its original at the end":
  *
- * Below 1 the curve is concave: t stays high through most of the travel and
- * only falls away near the end, so each world holds its substance far longer
- * and the transition happens in a shorter, more decisive window.
- *
- * Lower = more world visible through the middle. 0.35 keeps roughly 70% of the
- * clock at the point the linear version had already reached 40%.
+ *  - OUT (concave, <1): the leaving world holds its substance until late, then
+ *    winds away in a short decisive window. Keeps world visible through the
+ *    middle instead of dropping to a void early.
+ *  - IN (convex, >1): the arriving world stays dissolved through the first part
+ *    and forms progressively, reaching EXACTLY its original at the very end of
+ *    the gesture — not early with a plateau, which is what left a residual
+ *    twist/shrink sitting at full slider once T_MAX was low.
  */
-const UNROLL_CURVE = 0.35;
+const UNROLL_OUT_CURVE = 0.4;
+const UNROLL_IN_CURVE = 1.7;
 
 /**
  * How much the two halves overlap, in gesture units.
@@ -168,8 +172,8 @@ export class SplatMorphSystem extends createSystem({}) {
     const bRaw = clamp01((p - bStart) / (1 - bStart));
 
     // The power curve is what puts world back into the middle of the gesture.
-    this.unrollT[0].value = UNROLL_T_MAX * Math.pow(aRaw, UNROLL_CURVE);
-    this.unrollT[1].value = UNROLL_T_MAX * Math.pow(bRaw, UNROLL_CURVE);
+    this.unrollT[0].value = UNROLL_T_MAX * Math.pow(aRaw, UNROLL_OUT_CURVE);
+    this.unrollT[1].value = UNROLL_T_MAX * Math.pow(bRaw, UNROLL_IN_CURVE);
 
     // The real saving: skip a world entirely once it has nothing to show. A
     // zero-alpha splat is still sorted and rasterised — an invisible mesh is

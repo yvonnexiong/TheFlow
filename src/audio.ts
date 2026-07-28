@@ -56,6 +56,12 @@ export class Sound {
   private buffer: AudioBuffer | null = null;
   private loading: Promise<void> | null = null;
   private playing: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
+  /** Bumped by every play() and stop(). play() awaits load()+resume() before it
+   *  can start a source; if a stop() (or a newer play()) lands during that wait,
+   *  the token no longer matches and the stale play aborts. Without this, a
+   *  quick play/stop leaves stop() finding nothing to stop — this.playing is not
+   *  set until AFTER the await — and the source then starts and loops forever. */
+  private playToken = 0;
 
   constructor(
     private readonly url: string,
@@ -93,9 +99,26 @@ export class Sound {
    * something that was always there.
    */
   async play(fadeIn = 0): Promise<void> {
+    const token = ++this.playToken;
     await this.load();
     if (!this.buffer) return;
     if (!(await resumeAudio())) return;
+    // Superseded by a stop() or a newer play() while we were awaiting.
+    if (token !== this.playToken) return;
+
+    // A loop already running for this Sound must be torn down before another
+    // starts, or the two stack. Cut it hard rather than fading — the caller
+    // asked to (re)play, not to crossfade with itself.
+    if (this.playing) {
+      try {
+        this.playing.src.stop();
+      } catch {
+        /* already stopped */
+      }
+      this.playing.src.disconnect();
+      this.playing.gain.disconnect();
+      this.playing = null;
+    }
 
     const c = getAudioContext();
     const gain = c.createGain();
@@ -128,6 +151,8 @@ export class Sound {
 
   /** Fade out and stop a looping sound. No-op for one-shots. */
   stop(seconds = 2): void {
+    // Cancel any play() still in its await, so it does not start after this.
+    this.playToken++;
     if (!this.playing) return;
     const { src, gain } = this.playing;
     this.playing = null;
