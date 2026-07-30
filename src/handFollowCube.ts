@@ -226,7 +226,9 @@ const GRAB_SPEED_RELEASE = 0.08;
  *  nowhere else — the canvas sizes itself around whatever this says. */
 const HINT_TEXT = "slowly";
 
-/** Cap height of that word in metres. Width follows from the canvas aspect. */
+/** Cap height of that word in metres. Width follows from the canvas aspect.
+ *  Deliberately NOT scaled up with the hand graphic — the word reads fine at
+ *  this size, and enlarging it turned a murmur into a placard. */
 const HINT_HEIGHT = 0.075;
 
 /** Seconds for the mark to fade in and out. Slow enough to read as the piece
@@ -240,6 +242,10 @@ const HINT_FADE = 0.4;
  *  word appeared somewhere else. Two events, no visible link, and no way to
  *  tell WHICH hand was being spoken to. Sitting it on the offending marker
  *  makes the placement carry all of that without a syllable of explanation. */
+// Tied to HINT_HEIGHT: the sprite is CENTRED on this point, so the word's lower
+// edge sits at (this - HINT_HEIGHT/2) and must stay clear of the 0.07-radius
+// marker underneath. At 0.075 tall that leaves a 0.035m gap. If the word is
+// ever enlarged, raise this with it or it will sit inside the sphere.
 const SLOW_HINT_OFFSET_Y = 0.14;
 const SLOW_HINT_OFFSET_Z = 0.04;
 
@@ -304,8 +310,11 @@ const HAND_HINT_URL: Record<GestureId, Record<Handedness, string>> = {
 };
 
 /** Height of the hand graphic, in metres. Width follows the image's own aspect
- *  once it has loaded, so the cropped art is never stretched. */
-const HAND_HINT_SIZE = 0.16;
+ *  once it has loaded, so the cropped art is never stretched.
+ *
+ *  1.6x the original 0.16: legible at a glance without dominating the marker it
+ *  is pointing at. A straight doubling was tried and read as too big. */
+const HAND_HINT_SIZE = 0.256;
 
 /** Offset from the marker's centre, along +Z — that is, toward the player, so
  *  the graphic floats IN FRONT of the yin-yang sphere rather than beside it.
