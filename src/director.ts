@@ -264,9 +264,25 @@ const COSMOS_FADE_SECONDS = 3.5;
  * 二/三 only the sounds the player's own movement makes. Music arrives with the
  * mountains, which is the first world the player did not summon.
  */
-const SCENE_MUSIC: Partial<Record<PhaseId, string>> = {
-  expand: "./sfx/bgm_scene_ink.mp3", // standing in the mountains
-  resonance: "./sfx/bgm_scene_cosmo.mp3", // the cosmos
+const SCENE_MUSIC: Partial<Record<PhaseId, { url: string; loop?: boolean }>> = {
+  // Ambience: these hold a place for as long as the player stays in it, so they
+  // loop. Nobody should ever hear them end.
+  expand: { url: "./sfx/bgm_scene_ink.mp3", loop: true }, // the mountains
+  resonance: { url: "./sfx/bgm_scene_cosmo.mp3", loop: true }, // the cosmos
+
+  // 返 — the white void returning. The cosmos began dissolving on 六's flare and
+  // takes COSMOS_FADE_SECONDS to clear, so by the time this phase is entered the
+  // stars are going out and the white is coming back up behind them. The track
+  // arrives on that, not on the gesture that follows: the point is the return to
+  // emptiness, and crossfadeMusic() takes the cosmo track down underneath it so
+  // the two changes read as one.
+  //
+  // ONCE, not looped — the only track here that does not. It is a closing
+  // statement rather than a place to be, and 返 is terminal: advance() stops
+  // here, so a looping track would be heard rounding back on itself for as long
+  // as the player chose to stand there. What should follow it is the stillness
+  // the piece ends on.
+  return: { url: "./sfx/music_return.mp3", loop: false },
 };
 
 /** Not keyed by phase: this comes up the moment the bamboo is fully revealed,
@@ -388,7 +404,10 @@ const INTRO_FADE_OUT = 1.2;
  *  scale 1 is life-size-ish. Placed in front of wherever the player is standing
  *  when scene 2 begins, same as the rail — the XR origin is not where they are
  *  by then, since scene 0 made them walk. */
-const MOON_URL = "./glbs/moon.glb";
+// Path is Planets/, not the glbs/ root. Worth stating because the wrong one
+// FAILS SILENTLY: Vite answers an unknown path with index.html and a 200, so
+// GLTFLoader receives HTML, the parse fails, and the network tab shows success.
+const MOON_URL = "./glbs/Planets/moon.glb";
 const MOON_DISTANCE = 3.0; // metres ahead of the head
 const MOON_HEIGHT = 1.6; // metres, roughly eye level
 const MOON_SCALE = 1.0;
@@ -558,8 +577,8 @@ export class DirectorSystem extends createSystem({}) {
       this.preloadReveal();
       void this.heartbeat.load(); // decode during the load gate
       void this.groundSound.load();
-      for (const [phase, url] of Object.entries(SCENE_MUSIC)) {
-        const track = new Sound(url, MUSIC_VOLUME, true);
+      for (const [phase, entry] of Object.entries(SCENE_MUSIC)) {
+        const track = new Sound(entry.url, MUSIC_VOLUME, entry.loop ?? true);
         this.sceneMusic.set(phase as PhaseId, track);
         void track.load();
       }
