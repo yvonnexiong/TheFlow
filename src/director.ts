@@ -8,6 +8,7 @@ import {
 import { HandFollowCubeSystem } from "./handFollowCube.js";
 import { SplatRevealSystem } from "./splatReveal.js";
 import { SplatMorphSystem } from "./splatMorph.js";
+import { SplatFlowSystem } from "./splatFlow.js";
 import { Heartbeat } from "./heartbeat.js";
 import { CosmosSystem } from "./cosmos.js";
 import { Sound } from "./audio.js";
@@ -23,13 +24,20 @@ import { Sound } from "./audio.js";
 // Scene 2 三 reveal → the splat world is revealed BY HAND: the rail cube's
 //              progress drives the reveal wavefront directly, so the world
 //              only exists as far as the player has reached.
+// Scene 3 四 morph  → the bamboo cross-dissolves into the mountain temple.
+// Scene 4 五 expand → the mountains open into the celestial world.
+// Scene 5 六 resonance → nothing transitions; the sky answers the gesture.
+// Scene 6 返 return → the cosmos settles into 道, and the journey stops.
 //
 // The splat is PRELOADED at startup and kept hidden, so scene 2 opens instantly
 // rather than triggering a load. The white loading field blocks the start until
-// that preload is ready. Each phase's underlying system is used once, so nothing
-// ever re-attaches to a second set of meshes.
+// that preload is ready.
 //
-// The two-splat cross-fade (SplatMorphSystem) is no longer part of the journey.
+// HOW THE GESTURES DRIVE ANY OF THIS: by marker POSITION, throughout. 三 reads
+// the right rail alone (railProgress); 四/五/六/返 read both averaged
+// (bothProgress). Carrying the markers from one end of their rails to the other
+// completes the transition — and crossing GESTURE_COMPLETE_AT is what flares
+// them and hands off to the next phase, in updateHandoff().
 type PhaseId =
   | "breath"
   | "disc"
@@ -186,7 +194,7 @@ const GESTURE_COMPLETE_VOLUME = 0.7;
 const GESTURE_LOOP_FADE = 0.2;
 
 /** 四 morph — the world the reveal transitions INTO. */
-const MORPH_SPLAT = "Scene2/Celestial Taoist Mountain Sanctuary.compressed.ply";
+const MORPH_SPLAT = "Scene2/Mystical Mountain Temple Platform.compressed.ply";
 
 /** 五 expand — the world the mountains transition into in turn. */
 const EXPAND_SPLAT = "Scene3/Celestial Gateway to Floating Realms.spz";
@@ -210,6 +218,34 @@ const RETURN_SPLAT = "dao.spz";
  *  looking at 道, not down at it. */
 const RETURN_SPLAT_Z = -2.2;
 const RETURN_SPLAT_Y = 1.5;
+
+/**
+ * Run 返 as SplatFlowSystem's gather instead of SplatMorphSystem's dissolve.
+ *
+ * The two are interchangeable at the call site — same setPhase/isReady/restage
+ * — so this flips the last transition between them for comparison. Flow is the
+ * one STORY.md actually describes ("worlds dissolve into ink, gather, and
+ * settle into 道"); the dissolve is what was built before that was possible.
+ *
+ * Only ever applies to 返. 四 and 五 stay on the morph: there is one
+ * worldModifier slot per mesh, and the two systems would fight over it.
+ */
+const RETURN_USES_FLOW = true;
+
+/**
+ * The point both worlds gather into during 返, in the modifier's own space.
+ *
+ * The origin — which is roughly the middle of a capture, and the same point
+ * SplatMorphSystem's unroll contracts toward, so it is the known-good default.
+ *
+ * The other candidate is where 道 actually stands,
+ * `[0, RETURN_SPLAT_Y, RETURN_SPLAT_Z]`: the cosmos condensing on the exact
+ * spot the figure then emerges from is a stronger image, but it only works if
+ * that position lands where it is expected once the splat's own offsets are
+ * accounted for. Try the origin first, and move it there if the gather looks
+ * like it is happening somewhere arbitrary.
+ */
+const RETURN_GATHER: readonly [number, number, number] = [0, 0, 0];
 
 /** Seconds the cosmos takes to dissolve once the final gesture has flared. The
  *  stars dim as the journey ends rather than being switched off. */
@@ -373,7 +409,11 @@ const REVEAL_SPLAT_YAW = 0; // no rotation
 
 /** Extra height offset for the bamboo world, on top of the floor. Negative
  *  sinks it — the capture's own ground does not sit exactly at its origin. */
-const REVEAL_SPLAT_Y = -0.5; // 20cm lower than before
+// Sunk further (was -0.5) because the capture's own ground was intersecting the
+// taichi platform from 二 — the two surfaces met at almost the same height and
+// read as one clipping through the other. The disc is the thing the player is
+// standing on and must stay clearly on top.
+const REVEAL_SPLAT_Y = -0.68;
 
 export class DirectorSystem extends createSystem({}) {
   private readonly phases: PhaseId[] = [
@@ -552,13 +592,18 @@ export class DirectorSystem extends createSystem({}) {
       // whatever it returns to. Identical mechanism, restaged onto the last
       // pair; holds harmlessly if RETURN_SPLAT has not been set.
       const rails = this.world.getSystem(HandFollowCubeSystem);
-      const morph = this.world.getSystem(SplatMorphSystem);
-      if (!rails || !morph || !this.returnEntity) return;
+      // 返 may run either transition — see RETURN_USES_FLOW. Both expose the
+      // same three members used here, so the phase body needs no branching
+      // beyond picking which one to talk to.
+      const transition = RETURN_USES_FLOW
+        ? this.world.getSystem(SplatFlowSystem)
+        : this.world.getSystem(SplatMorphSystem);
+      if (!rails || !transition || !this.returnEntity) return;
 
-      morph.setPhase(rails.bothProgress);
+      transition.setPhase(rails.bothProgress);
       this.updateGestureAudio(rails.bothProgress >= GESTURE_COMPLETE_AT);
 
-      if (morph.isReady && this.returnEntity.object3D?.visible === false) {
+      if (transition.isReady && this.returnEntity.object3D?.visible === false) {
         this.returnEntity.object3D.visible = true;
         console.log("[Director] return attached — final world armed");
       }
@@ -965,7 +1010,14 @@ export class DirectorSystem extends createSystem({}) {
       splatUrl: splatPath(RETURN_SPLAT),
       animate: false,
     });
-    this.world.getSystem(SplatMorphSystem)?.prewarm(this.returnEntity);
+    // Prewarm into whichever system will actually run 返. Compiling this world
+    // for the morph and then handing it to the flow would force the recompile
+    // at the transition — precisely the stall the prewarm exists to avoid.
+    if (RETURN_USES_FLOW) {
+      this.world.getSystem(SplatFlowSystem)?.prewarm(this.returnEntity);
+    } else {
+      this.world.getSystem(SplatMorphSystem)?.prewarm(this.returnEntity);
+    }
   }
 
   /** Same as preloadMorph, for the world 五 transitions into. */
@@ -1546,9 +1598,25 @@ export class DirectorSystem extends createSystem({}) {
       // arrives. Same restage as before — the modifier, the phase uniform and
       // the prewarm all already exist.
       if (this.expandEntity && this.returnEntity) {
-        this.world
-          .getSystem(SplatMorphSystem)
-          ?.restage(this.expandEntity, this.returnEntity);
+        if (RETURN_USES_FLOW) {
+          // Hand the worldModifier slot over. There is only one, and whichever
+          // system last called updateGenerator() owns it — so the morph must
+          // let go BEFORE the flow attaches, or the morph's per-frame
+          // updateVersion() keeps running against meshes it no longer drives.
+          this.world.getSystem(SplatMorphSystem)?.release();
+
+          const flow = this.world.getSystem(SplatFlowSystem);
+          flow?.setGatherPoint(
+            RETURN_GATHER[0],
+            RETURN_GATHER[1],
+            RETURN_GATHER[2],
+          );
+          flow?.restage(this.expandEntity, this.returnEntity);
+        } else {
+          this.world
+            .getSystem(SplatMorphSystem)
+            ?.restage(this.expandEntity, this.returnEntity);
+        }
       } else {
         console.warn("[Director] 返 without a second world — holding");
       }

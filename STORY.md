@@ -139,29 +139,29 @@ of its unfolding.**
 
 ---
 
-## Where the build diverges (as of 2026-07-19)
+## Where the build diverges (as of 2026-07-29)
 
 Recorded so the gap is explicit rather than discovered later.
 
 | Scene | Story | Build |
 |---|---|---|
 | 2 | "Raise **both** hands" | Only the RIGHT rail drives the reveal; the left is tracked but unused |
-| 3 | One **circular, continuous** gesture, repeated | Distinct gestures per transition: a curved inward sweep, then an outward parting |
+| 3 | One **circular, continuous** gesture, repeated | Three layouts (举 lift / 合 gather / 开 open) across five phases, so 六 and 返 DO reprise 四 and 五 — the same motion recurring is half-true. Each is still carried end to end rather than looped, though the marker ratchet makes it pumpable: pushing, drawing back and pushing again is now a way to cross a rail |
 | 4 | Circular gesture; a distant planet responds | Built as 六 resonance — 17 planets on 7 orbits, turned by the sweep gesture |
-| **5** | **Worlds dissolve into ink, gather, and settle into 道** | **Not built.** `src/returnToDao.ts` exists but is wired to nothing |
+| 5 | Worlds dissolve into ink, **gather**, and settle into 道 | **Being attempted.** 返 now runs `SplatFlowSystem`: every splat travels to a shared gather point at a per-splat randomised rate, so the world disperses and reconverges rather than fading. That is the "dissolve into ink and gather" motion. What is still not the written version is 道 itself — it arrives as a captured splat (`dao.spz`), not assembled out of the dissolved worlds. `src/returnToDao.ts` sketches that and is wired to nothing |
 | 0 | Voice line "Before all things, there was only Dao." | Shown as text (`introText.png`); not recorded |
 | 5 | Voice line "All things flow from Dao, and return to Dao." | Not recorded |
 | 1 | "A low sound emerges. The first wind is heard." | Ground sound plays; no wind |
 
-Two stand out.
-
 **The circular gesture** is the story's through-line for scenes 3 onward — the
 *same* motion carrying the player from earth to mountain to cosmos. The build
-instead gives each transition its own distinct gesture. Making one repeating
-loop the primitive is a design change, not a tuning change.
+instead gives each transition its own distinct gesture, carried once from one
+end of its rail to the other. Making one repeating loop the primitive is a
+design change, not a tuning change — a sustained-flow version was built and
+rejected on 2026-07-29, so treat this row as open, not as work in progress.
 
-**Scene 5 is the ending and does not exist.** The journey currently stops at
-resonance, which is the second-to-last beat. `src/returnToDao.ts` sketches an
-approach — the character rasterised at runtime and sampled into particle
-targets, so the form is made of the same drifting stuff as the worlds that
-dissolved into it — but nothing calls it.
+**The ending exists but is not the one written.** 返 dissolves the cosmos into a
+captured 道 rather than gathering the dissolved worlds into the figure like ink.
+`src/returnToDao.ts` sketches the written approach — the character rasterised at
+runtime and sampled into particle targets, so the form is made of the same
+drifting stuff as the worlds that came before — but nothing calls it.

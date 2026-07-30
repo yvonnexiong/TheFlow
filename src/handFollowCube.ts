@@ -91,16 +91,21 @@ const CAP_RADIUS = 0.011;
  * How close the fingertip must be to a marker's centre to grab it (metres).
  *
  * Deliberately much larger than the 0.14m sphere it surrounds — this is a
- * trigger volume, not the object. Hand tracking is noisy, the markers sit at
- * arm's length, and a miss that silently does nothing is far more frustrating
- * than an early catch. The player should be able to reach toward a marker and
- * have it respond, rather than having to land on it.
+ * trigger volume, not the object: ~4.6x the marker's 0.07m radius. Hand
+ * tracking is noisy, the markers sit at arm's length, and a miss that silently
+ * does nothing is far more frustrating than an early catch. The player should
+ * be able to reach toward a marker and have it respond, rather than having to
+ * land on it.
  *
- * Cross-talk is not a concern even though this exceeds the gap between the two
- * rails: each hand only ever drives its own marker, so a left hand inside the
- * right marker's radius does nothing.
+ * Cross-talk is not a concern even though the two trigger volumes now OVERLAP
+ * substantially (0.32 each against rails 0.52 apart): each hand only ever
+ * drives its own marker, so a left hand inside the right marker's radius does
+ * nothing.
+ *
+ * Kept clear of RELEASE_RADIUS (0.44) by a wide margin — that gap IS the
+ * hysteresis, and closing it would bring back the catch/drop chatter.
  */
-const TOUCH_RADIUS = 0.26;
+const TOUCH_RADIUS = 0.32;
 
 /** Once held, the finger may stray this far before the marker is released.
  *  Larger than TOUCH_RADIUS so brief jitter doesn't drop it mid-gesture. */
@@ -115,6 +120,238 @@ const JOINT: XRHandJoint = "index-finger-tip";
  *  Tracking drops frames often enough that raw per-frame velocity spikes
  *  wildly; averaging over ~3 frames removes that without noticeable lag. */
 const SPEED_SMOOTHING = 0.35;
+
+// ------------------------------------------------------------
+// One way only, and not in a hurry
+// ------------------------------------------------------------
+// Two rules, and they are designed as a pair.
+//
+// RATCHET: the marker never travels back toward `from`. A gesture is a
+// commitment; nothing the player has drawn out of the world retreats. This is
+// also what lets the completion test stay simple — progress is monotonic, so it
+// cannot drift back under GESTURE_COMPLETE_AT once reached.
+//
+// A hand moving backward is not ignored, though: the reference point follows it
+// back. Otherwise the fingertip would walk away from a marker that refuses to
+// move and, within one stroke, exceed RELEASE_RADIUS and drop it. Following the
+// hand back means the player can PUMP — push, return, push again — which is how
+// a 0.30m rail is carried by a repeating circular motion rather than one pull.
+//
+// SPEED: snatching at a marker lets it go. On its own that would be a cruel
+// rule, because the player loses their work and is told nothing; combined with
+// the ratchet it costs them only a pause, since the progress stays. The "slowly"
+// mark explains why. The three parts only work together — removing any one of
+// them makes the other two worse than useless.
+
+/**
+ * Speed (m/s) at which the MARKER may be carried along its rail before it is
+ * let go. Not the hand's speed — see the test at the end of drive() for why
+ * that distinction is the whole thing.
+ *
+ * A relaxed sweep of the 0.30m rail advances at ~0.15 m/s. At 0.45 this allowed
+ * the whole rail to be crossed in 0.67s, which still read as hurried; 0.25 puts
+ * the floor at roughly 1.2s per sweep. The margin over a relaxed sweep is now
+ * modest — under ~1.7x — so if ordinary movement starts tripping it, this is
+ * the number that has been taken too far, not DEACTIVATE_DWELL.
+ */
+const DEACTIVATE_SPEED = 0.25;
+
+/**
+ * Fingertip speed (m/s) at or below which a marker may be PICKED UP.
+ *
+ * This was 0.2 while the lockout still read HAND speed: back then a reach could
+ * catch a marker and be punished for the deceleration that followed, so the
+ * grab had to wait for a hand that had completely settled. That is no longer
+ * how the penalty works — it now measures how fast the MARKER is being carried,
+ * and merely reaching toward one advances nothing — so the strict gate had
+ * stopped buying anything and was only making the marker feel unreachable. A
+ * reach across arm's length runs 0.3–0.8 m/s, which 0.2 refused outright: the
+ * player had to push their hand right up against the marker and stop before it
+ * would respond.
+ *
+ * What is left for this to do is narrow but real: stop a hand that is flying
+ * past on its way somewhere else from snatching a marker in passing.
+ */
+const GRAB_MAX_SPEED = 0.6;
+
+/**
+ * Having dropped a marker for speed, the HAND must slow below this (m/s) before
+ * it may pick the marker up again.
+ *
+ * An absolute figure, not a fraction of DEACTIVATE_SPEED as it used to be.
+ * Those two once measured the same quantity, so deriving one from the other was
+ * harmless; now that DEACTIVATE_SPEED governs the MARKER's advance and this
+ * governs the HAND, the link was only a trap — tightening the marker rule would
+ * silently demand a nearly motionless hand before giving the marker back.
+ */
+const REARM_SPEED = 0.25;
+
+/**
+ * Minimum time a speed-drop lasts, regardless of how fast the hand settles.
+ *
+ * Slowing down cannot be the only condition. A hand DECELERATES at the end of
+ * every stroke — it has to, in order to turn around — so a lockout that cleared
+ * on speed alone cleared once per stroke. Since the ratchet keeps whatever the
+ * stroke already advanced, that let a player pump their way through the whole
+ * gesture at full speed with a flicker of "slowly" between strokes: fast was still
+ * the winning strategy, and the mark was noise. The pause has to outlast the
+ * turnaround for the rule to mean anything.
+ */
+const LOCKOUT_SECONDS = 1.2;
+
+/** How long a lockout must have lasted before the "slowly" mark appears.
+ *
+ *  Was 0.35 when the mark floated in the middle of the rails: a long delay was
+ *  the only thing keeping it from feeling like noise. Now that it appears ON
+ *  the marker that was dropped, the link to the cause is visible and it can
+ *  come almost at once — this is down to filtering a momentary slip, nothing
+ *  more. Waiting longer would only break the causality again. */
+const HINT_DELAY = 0.15;
+
+/** How long the marker must keep advancing above DEACTIVATE_SPEED before it is
+ *  dropped. Tracking spikes for a single frame often enough that acting on one
+ *  reading would throw the marker away at random; ~3-4 frames does not. Also
+ *  caps how far a fast sweep gets before it is stopped — at 0.05s it cannot
+ *  steal more than a couple of centimetres. */
+const DEACTIVATE_DWELL = 0.05;
+
+/** Speed-tracking weights: attack quickly, release slowly. A snatch has to
+ *  register on the frames it happens, and — more importantly — the reading must
+ *  not sag back under the threshold halfway through a stroke, which is what let
+ *  a fast sweep quietly resume after being dropped. */
+const GRAB_SPEED_ATTACK = 0.5;
+const GRAB_SPEED_RELEASE = 0.08;
+
+/** The word shown when a marker has been dropped for speed. Change it here and
+ *  nowhere else — the canvas sizes itself around whatever this says. */
+const HINT_TEXT = "slowly";
+
+/** Cap height of that word in metres. Width follows from the canvas aspect. */
+const HINT_HEIGHT = 0.075;
+
+/** Seconds for the mark to fade in and out. Slow enough to read as the piece
+ *  speaking rather than as an error message appearing. */
+const HINT_FADE = 0.4;
+
+/** Offset of the "slowly" mark from the marker it belongs to — just above it.
+ *
+ *  It used to hang at a fixed height in the middle of the two rails, and that
+ *  was the mistake: the marker went dark in one place and, a moment later, a
+ *  word appeared somewhere else. Two events, no visible link, and no way to
+ *  tell WHICH hand was being spoken to. Sitting it on the offending marker
+ *  makes the placement carry all of that without a syllable of explanation. */
+const SLOW_HINT_OFFSET_Y = 0.14;
+const SLOW_HINT_OFFSET_Z = 0.04;
+
+/** Canvas for the word. Module-level and built once — both rails show the same
+ *  mark, and rasterising it twice would be two textures saying one thing. */
+let slowHintTexture: THREE.Texture | null = null;
+let slowHintAspect = 1;
+
+function getSlowHintTexture(): THREE.Texture | null {
+  if (slowHintTexture) return slowHintTexture;
+
+  const width = 512;
+  const height = 160;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  ctx.clearRect(0, 0, width, height);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = `italic 96px Georgia, "Times New Roman", serif`;
+  // Same warm white as the seed circle and the marker halo — the piece has
+  // exactly one accent colour and this is it.
+  ctx.fillStyle = "#ffe9a8";
+  ctx.fillText(HINT_TEXT, width / 2, height / 2 + 4);
+
+  slowHintTexture = new THREE.CanvasTexture(canvas);
+  slowHintTexture.colorSpace = THREE.SRGBColorSpace;
+  slowHintAspect = width / height;
+  return slowHintTexture;
+}
+
+/** Scratch, so the per-frame lockout ramp does not allocate a Color a frame. */
+const scratchColour = new THREE.Color();
+
+// ------------------------------------------------------------
+// Hand graphics — "reach here and it wakes up"
+// ------------------------------------------------------------
+// Grabbing is automatic on proximity, which is only discoverable if the player
+// thinks to reach. These say so. One per hand per gesture, shown beside an
+// IDLE marker and gone the moment it is taken.
+type GestureId = "lift" | "gather" | "open";
+
+const HAND_HINT_URL: Record<GestureId, Record<Handedness, string>> = {
+  lift: {
+    left: "./ui/HandGestureGraphic/hand_gesture_1_lift_left_white_outline_cropped.png",
+    right:
+      "./ui/HandGestureGraphic/hand_gesture_1_lift_right_white_outline_cropped.png",
+  },
+  gather: {
+    left: "./ui/HandGestureGraphic/hand_gesture_2_gather_left_white_outline_cropped.png",
+    right:
+      "./ui/HandGestureGraphic/hand_gesture_2_gather_right_white_outline_cropped.png",
+  },
+  open: {
+    left: "./ui/HandGestureGraphic/hand_gesture_3_open_left_white_outline_cropped.png",
+    right:
+      "./ui/HandGestureGraphic/hand_gesture_3_open_right_white_outline_cropped.png",
+  },
+};
+
+/** Height of the hand graphic, in metres. Width follows the image's own aspect
+ *  once it has loaded, so the cropped art is never stretched. */
+const HAND_HINT_SIZE = 0.16;
+
+/** Offset from the marker's centre, along +Z — that is, toward the player, so
+ *  the graphic floats IN FRONT of the yin-yang sphere rather than beside it.
+ *  Set to 0 and raise HAND_HINT_OFFSET_Y instead to put it back above. */
+const HAND_HINT_OFFSET_Z = 0.1;
+const HAND_HINT_OFFSET_Y = 0;
+
+/** How long a marker must sit idle before its hand graphic appears.
+ *
+ *  Not instant: the player loses contact briefly all the time — at the turn of
+ *  a pump stroke, through a tracking blink — and a graphic that flashed up each
+ *  time would be worse than none. But this is now the ONLY answer to "my hand
+ *  drifted off and the marker went dark", which wants answering promptly, so it
+ *  is shorter than a pure idle timeout would be. */
+const HAND_HINT_DELAY = 0.5;
+
+/** Seconds to fade the hand graphic in. It leaves faster than it arrives —
+ *  see HAND_HINT_FADE_OUT — because acknowledging a grab should feel instant. */
+const HAND_HINT_FADE_IN = 0.5;
+const HAND_HINT_FADE_OUT = 0.15;
+
+/** Loaded once and shared: the same six images serve both rails. */
+const handHintTextures = new Map<string, THREE.Texture>();
+
+function getHandHintTexture(
+  gesture: GestureId,
+  side: Handedness,
+  onReady: (texture: THREE.Texture) => void,
+): void {
+  const url = HAND_HINT_URL[gesture][side];
+  const cached = handHintTextures.get(url);
+  if (cached) {
+    onReady(cached);
+    return;
+  }
+  new THREE.TextureLoader().load(
+    url,
+    (texture) => {
+      texture.colorSpace = THREE.SRGBColorSpace;
+      handHintTextures.set(url, texture);
+      onReady(texture);
+    },
+    undefined,
+    () => console.warn(`[Rails] hand graphic failed to load: ${url}`),
+  );
+}
 
 /** How fast the rails chase the player's head when following, per second.
  *  Loose enough that turning your head does not drag them rigidly with you,
@@ -203,6 +440,10 @@ type Handedness = "left" | "right";
 
 /** Which way a rail runs, and between what. Progress is always 0 at `from`. */
 type RailConfig = {
+  /** Which of the three gestures this layout is — selects the hand graphic.
+   *  The journey runs 举 lift → 合 gather → 开 open → 合 gather → 开 open, so
+   *  the last two layouts are deliberate reprises and reuse their art. */
+  gesture: GestureId;
   /** Axis of travel in rail-local space. */
   axis: "x" | "y";
   /** Position at progress 0. May be GREATER than `to` — that is how a rail
@@ -238,7 +479,28 @@ class Rail {
   private materials: THREE.MeshStandardMaterial[] = [];
   private held = false;
   private prevTip: number | null = null;
+  /** Dropped for moving too fast, and refusing to be picked up until the hand
+   *  settles. Distinct from simply not-held: this one shows the "slowly" mark. */
+  private lockedOut = false;
+  private readonly prevTipWorld = new THREE.Vector3();
+  private hasPrevTipWorld = false;
+  private tipSpeed = 0;
+  /** Seconds the fingertip has been continuously over DEACTIVATE_SPEED. */
+  private overSpeed = 0;
+  /** Seconds the current lockout has lasted. Gates both the re-arm and "slowly". */
+  private lockoutTimer = 0;
   private glow = 0;
+  /** The "reach here" hand graphic. Parented to the marker, so it follows
+   *  whatever the player has already carried rather than sitting at the start
+   *  of a rail they are halfway along. */
+  private handHint: THREE.Sprite | null = null;
+  private handHintOpacity = 0;
+  /** The "slowly" mark for THIS marker. Also parented to it, so the word and
+   *  the marker that earned it are never in two different places. */
+  private slowHint: THREE.Sprite | null = null;
+  private slowHintOpacity = 0;
+  /** Seconds this marker has sat untouched. Gates HAND_HINT_DELAY. */
+  private idleTime = 0;
   private halo!: THREE.Sprite;
   private cfg: RailConfig | null = null;
   private readonly markerWorld = new THREE.Vector3();
@@ -282,7 +544,9 @@ class Rail {
 
   /** Lay the rail out for a gesture, and park the marker at progress 0. */
   configure(cfg: RailConfig): void {
+    const gestureChanged = this.cfg?.gesture !== cfg.gesture;
     this.cfg = cfg;
+    if (gestureChanged) this.applyHandHint(cfg.gesture);
 
     // Rebuild the bar along the path. Straight rails could reuse a scaled box,
     // but a bowed one cannot — and configure() runs twice a session, so the
@@ -350,6 +614,17 @@ class Rail {
     return (pos - this.cfg.from) / (this.cfg.to - this.cfg.from);
   }
 
+  /** Dropped for speed and not yet re-armed. Dims the marker. */
+  get isLockedOut(): boolean {
+    return this.lockedOut;
+  }
+
+  /** Locked out long enough to be worth saying something about — what the
+   *  "slowly" mark reads. A momentary slip is not a lesson. */
+  get wantsHint(): boolean {
+    return this.lockedOut && this.lockoutTimer >= HINT_DELAY;
+  }
+
   reset(): void {
     if (this.cfg) this.marker.position.copy(this.pointAt(this.cfg, 0));
     this.release();
@@ -358,6 +633,12 @@ class Rail {
   release(): void {
     this.held = false;
     this.prevTip = null;
+    // A deliberate release clears the lockout: this is how the rails are handed
+    // over between phases, and a new gesture must never open already refusing
+    // to be touched.
+    this.lockedOut = false;
+    this.lockoutTimer = 0;
+    this.overSpeed = 0;
     // Clear the flare too. A glow left running would otherwise survive into the
     // next gesture, since configure() releases but never touched it.
     this.glow = 0;
@@ -370,7 +651,144 @@ class Rail {
   untracked(): void {
     this.held = false;
     this.prevTip = null;
+    // Forget the last seen fingertip. Tracking gaps are routine at the edge of
+    // the cameras' view, and measuring across one would report the whole jump
+    // as a single frame's motion — an enormous phantom speed that would lock
+    // the marker out the instant the hand came back.
+    this.hasPrevTipWorld = false;
+    this.tipSpeed = 0;
+    this.overSpeed = 0;
+    // The LOCKOUT SURVIVES a tracking gap. Hands leave the cameras' view at the
+    // extremes of a rail — exactly where a fast sweep ends — so clearing it
+    // here would make "swing hard enough to lose tracking" a way to skip the
+    // pause entirely. The timer simply stops while the hand is gone.
     this.refreshColour(false);
+  }
+
+  /**
+   * Point the hand graphic at the gesture now being asked for.
+   *
+   * The sprite is created on first use and then only re-textured, because
+   * configure() runs at every phase change and rebuilding a sprite each time
+   * would churn a material the renderer has already compiled.
+   */
+  private applyHandHint(gesture: GestureId): void {
+    getHandHintTexture(gesture, this.side, (texture) => {
+      if (!this.handHint) {
+        this.handHint = new THREE.Sprite(
+          new THREE.SpriteMaterial({
+            transparent: true,
+            depthWrite: false,
+            opacity: 0,
+          }),
+        );
+        this.handHint.position.set(0, HAND_HINT_OFFSET_Y, HAND_HINT_OFFSET_Z);
+        this.handHint.visible = false;
+        // Same always-on-top treatment drawOverSplats() gives everything else
+        // under the rail root, applied here because this sprite is born inside
+        // an async texture callback and so misses that sweep entirely. Without
+        // it the graphic is simply inside the revealed world and invisible.
+        this.handHint.renderOrder = 10_000;
+        const m = this.handHint.material as THREE.SpriteMaterial;
+        m.depthTest = true;
+        m.depthWrite = true;
+        m.depthFunc = THREE.AlwaysDepth;
+        this.marker.add(this.handHint);
+      }
+      const material = this.handHint.material as THREE.SpriteMaterial;
+      material.map = texture;
+      material.needsUpdate = true;
+
+      // Take the width from the art. These are cropped exports with no common
+      // aspect, so a uniform scale would squash some of them.
+      const image = texture.image as { width: number; height: number };
+      const aspect = image?.height ? image.width / image.height : 1;
+      this.handHint.scale.set(HAND_HINT_SIZE * aspect, HAND_HINT_SIZE, 1);
+    });
+  }
+
+  /** Build the "slowly" sprite on first need, sharing the module texture. */
+  private ensureSlowHint(): void {
+    if (this.slowHint) return;
+    const texture = getSlowHintTexture();
+    if (!texture) return;
+
+    this.slowHint = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthWrite: false,
+        opacity: 0,
+      }),
+    );
+    this.slowHint.scale.set(
+      HINT_HEIGHT * slowHintAspect,
+      HINT_HEIGHT,
+      1,
+    );
+    this.slowHint.position.set(0, SLOW_HINT_OFFSET_Y, SLOW_HINT_OFFSET_Z);
+    this.slowHint.visible = false;
+    // Always-on-top, as drawOverSplats() does for everything under the rail
+    // root — this sprite is created after that sweep has run.
+    this.slowHint.renderOrder = 10_000;
+    const m = this.slowHint.material as THREE.SpriteMaterial;
+    m.depthTest = true;
+    m.depthWrite = true;
+    m.depthFunc = THREE.AlwaysDepth;
+    this.marker.add(this.slowHint);
+  }
+
+  /**
+   * Per-frame upkeep for everything this marker says about itself.
+   *
+   * Driven from the system every frame rather than from drive(), because the
+   * moments that matter most here — no hand anywhere near the rails, or a hand
+   * serving out a lockout — are exactly when drive() is not being called.
+   */
+  tick(dt: number): void {
+    this.ensureSlowHint();
+
+    // While locked out, the marker brightens back toward normal in step with
+    // the pause it is serving. This is the whole answer to "is it broken, or is
+    // it coming back?", and it is an answer the player can SEE — no wording
+    // needed, and none would fit a piece that shows rather than instructs.
+    if (this.lockedOut) this.refreshColour(true);
+
+    if (this.slowHint) {
+      const wanted = this.lockedOut && this.lockoutTimer >= HINT_DELAY ? 1 : 0;
+      const slowStep = HINT_FADE > 0 ? dt / HINT_FADE : 1;
+      this.slowHintOpacity += THREE.MathUtils.clamp(
+        wanted - this.slowHintOpacity,
+        -slowStep,
+        slowStep,
+      );
+      this.slowHint.visible = this.slowHintOpacity > 0.001;
+      (this.slowHint.material as THREE.SpriteMaterial).opacity =
+        this.slowHintOpacity;
+    }
+
+    if (!this.handHint) return;
+
+    // Locked out is NOT idle. That moment belongs to "slowly"; inviting the
+    // player to reach for a marker that is refusing to be picked up would
+    // contradict it outright.
+    const idle = !this.held && !this.lockedOut;
+    this.idleTime = idle ? this.idleTime + dt : 0;
+
+    const target = this.idleTime >= HAND_HINT_DELAY ? 1 : 0;
+    const fade = target > this.handHintOpacity
+      ? HAND_HINT_FADE_IN
+      : HAND_HINT_FADE_OUT;
+    const step = fade > 0 ? dt / fade : 1;
+    this.handHintOpacity += THREE.MathUtils.clamp(
+      target - this.handHintOpacity,
+      -step,
+      step,
+    );
+
+    this.handHint.visible = this.handHintOpacity > 0.001;
+    (this.handHint.material as THREE.SpriteMaterial).opacity =
+      this.handHintOpacity;
   }
 
   /** Glow intensity 0..1 — the beat after a gesture completes. */
@@ -388,8 +806,34 @@ class Rail {
    * compared in world, then the tip is converted into rail-local space so the
    * delta is measured along the rail's own axis.
    */
-  drive(tipWorld: THREE.Vector3, root: THREE.Object3D): void {
+  drive(tipWorld: THREE.Vector3, root: THREE.Object3D, dt: number): void {
     if (!this.cfg) return;
+
+    // Fingertip speed. This one is about the HAND, and is used only to decide
+    // whether the hand is settled enough to pick a marker up, and settled
+    // enough to be given it back. It deliberately does NOT decide the penalty —
+    // see the advance-speed test at the bottom of this method.
+    if (this.hasPrevTipWorld && dt > 0) {
+      const raw = this.prevTipWorld.distanceTo(tipWorld) / dt;
+      const k = raw > this.tipSpeed ? GRAB_SPEED_ATTACK : GRAB_SPEED_RELEASE;
+      this.tipSpeed += (raw - this.tipSpeed) * k;
+    }
+    this.prevTipWorld.copy(tipWorld);
+    this.hasPrevTipWorld = true;
+
+    // Serving the pause. Both conditions, not either: the clock stops a player
+    // pumping through on the natural deceleration between strokes, and the
+    // speed test stops the marker coming back while the hand is still racing.
+    if (this.lockedOut) {
+      this.lockoutTimer += dt;
+      if (
+        this.lockoutTimer >= LOCKOUT_SECONDS &&
+        this.tipSpeed < REARM_SPEED
+      ) {
+        this.lockedOut = false;
+        this.lockoutTimer = 0;
+      }
+    }
 
     this.marker.getWorldPosition(this.markerWorld);
     const dist = tipWorld.distanceTo(this.markerWorld);
@@ -397,12 +841,20 @@ class Rail {
     // Asymmetric thresholds: harder to catch than to keep. Without hysteresis
     // the marker drops and re-grabs repeatedly as the fingertip jitters around
     // a single boundary.
+    // Catching needs a settled hand (GRAB_MAX_SPEED); keeping one only needs to
+    // stay under the far looser drop threshold. See GRAB_MAX_SPEED for why the
+    // gap between the two matters.
     const wasHeld = this.held;
-    this.held = this.held ? dist < RELEASE_RADIUS : dist < TOUCH_RADIUS;
+    this.held = this.lockedOut
+      ? false
+      : this.held
+        ? dist < RELEASE_RADIUS
+        : dist < TOUCH_RADIUS && this.tipSpeed <= GRAB_MAX_SPEED;
     this.refreshColour(true);
 
     if (!this.held) {
       this.prevTip = null; // released — next grab starts a fresh reference
+      this.overSpeed = 0; // nothing is being carried, so nothing is too fast
       return;
     }
 
@@ -414,11 +866,25 @@ class Rail {
     // and where carries no meaning — only what they do next.
     if (!wasHeld || this.prevTip === null) {
       this.prevTip = along;
+      this.overSpeed = 0;
       return;
     }
 
     const delta = along - this.prevTip;
     this.prevTip = along;
+
+    // RATCHET. `to` may be less than `from` — a rail running right-to-left is
+    // how the right hand sweeps inward — so "forward" is whichever way this
+    // rail's own travel points, not a fixed sign.
+    const forward = Math.sign(this.cfg.to - this.cfg.from);
+    if (delta * forward <= 0) {
+      // Backward. The marker stays; the reference has already followed the hand
+      // (prevTip above), so the fingertip does not walk away from a marker that
+      // will not move — and the next forward push advances from here. This is
+      // what makes the gesture pumpable instead of a single one-way pull.
+      this.overSpeed = 0; // the marker is not advancing; speed is irrelevant
+      return;
+    }
 
     // Velocity match at 1:1 — the marker travels exactly as far as the hand
     // did, and stops the instant the hand stops. No smoothing: a lerp toward a
@@ -426,11 +892,8 @@ class Rail {
     // marker being dragged rather than carried.
     const lo = Math.min(this.cfg.from, this.cfg.to);
     const hi = Math.max(this.cfg.from, this.cfg.to);
-    const moved = THREE.MathUtils.clamp(
-      this.marker.position[this.cfg.axis] + delta,
-      lo,
-      hi,
-    );
+    const before = this.marker.position[this.cfg.axis];
+    const moved = THREE.MathUtils.clamp(before + delta, lo, hi);
 
     // Advance along the PRIMARY axis from the hand's motion, then re-seat onto
     // the curve. The hand drives the sweep; the arc is the rail's shape, not
@@ -438,6 +901,35 @@ class Rail {
     // make the marker drop the moment they cut the corner.
     const t = (moved - this.cfg.from) / (this.cfg.to - this.cfg.from);
     this.marker.position.copy(this.pointAt(this.cfg, t));
+
+    // ------------------------------------------------------------
+    // Too fast — measured on the MARKER, not the hand
+    // ------------------------------------------------------------
+    // The rule is "do not sweep the world along too quickly", and the only
+    // motion that sweeps anything is the marker's own advance. Reading hand
+    // speed instead punished three things that are not that offence at all:
+    // pulling away from a marker (fast, but moving nothing), arriving at the
+    // end stop (fast, but clamped), and drawing back for another stroke (fast,
+    // but blocked by the ratchet). Every one of those left the player with a
+    // "slowly" they could not connect to anything they had done.
+    //
+    // Post-clamp, so an end stop reads as zero — the gesture is over there, and
+    // it must not be possible to finish a gesture and be told off for it.
+    const advanceSpeed = dt > 0 ? Math.abs(moved - before) / dt : 0;
+    this.overSpeed =
+      advanceSpeed > DEACTIVATE_SPEED ? this.overSpeed + dt : 0;
+
+    if (this.overSpeed >= DEACTIVATE_DWELL) {
+      // Let go, and stay let go. The glow is NOT cleared the way release()
+      // would: if this lands during the completion flare, that flare belongs to
+      // a gesture already finished and is not the player's to lose.
+      this.held = false;
+      this.prevTip = null;
+      this.overSpeed = 0;
+      this.lockedOut = true;
+      this.lockoutTimer = 0;
+      this.refreshColour(true);
+    }
   }
 
   /**
@@ -498,7 +990,20 @@ class Rail {
         );
       }
       else if (this.held) m.emissive.setHex(HELD_EMISSIVE);
-      else if (tracked) m.emissive.setHex(tint.emissive);
+      // Locked out: dark at the instant it is dropped, then brightening back to
+      // normal across the pause it is serving. The marker IS the countdown.
+      // Holding it flatly black for the full LOCKOUT_SECONDS said "broken"
+      // rather than "wait", and left the player no way to know a gesture was
+      // about to become possible again except by prodding at it.
+      else if (this.lockedOut) {
+        const t =
+          LOCKOUT_SECONDS > 0
+            ? Math.min(1, this.lockoutTimer / LOCKOUT_SECONDS)
+            : 1;
+        m.emissive
+          .setHex(0x000000)
+          .lerp(scratchColour.setHex(tint.emissive), t);
+      } else if (tracked) m.emissive.setHex(tint.emissive);
       else m.emissive.setHex(0x000000);
     }
   }
@@ -521,6 +1026,18 @@ export class HandFollowCubeSystem extends createSystem({}) {
   private readonly prevRightTip = new THREE.Vector3();
   private hasPrevRightTip = false;
   private smoothedRightSpeed = 0;
+
+  /** Latch for the no-handedness warning — see checkHandedness(). */
+  private warnedHandedness = false;
+
+  /** True while either marker has been locked out long enough to be told about.
+   *  The mark itself lives on the offending Rail — this is only for callers who
+   *  want to know the state. */
+  get tooFast(): boolean {
+    return this.rails
+      ? this.rails.left.wantsHint || this.rails.right.wantsHint
+      : false;
+  }
 
   /** The RIGHT marker's progress, 0..1 — what drives the 三 reveal. */
   get railProgress(): number {
@@ -550,12 +1067,14 @@ export class HandFollowCubeSystem extends createSystem({}) {
   /** Lay both rails out VERTICALLY, side by side, for the 三 reveal. */
   configureForReveal(): void {
     this.rails.left.configure({
+      gesture: "lift",
       axis: "y",
       from: TRACK_BOTTOM,
       to: TRACK_TOP,
       cross: -RAIL_SPREAD,
     });
     this.rails.right.configure({
+      gesture: "lift",
       axis: "y",
       from: TRACK_BOTTOM,
       to: TRACK_TOP,
@@ -574,6 +1093,7 @@ export class HandFollowCubeSystem extends createSystem({}) {
     // Right starts on the right and travels inward; left mirrors it. Both end
     // just short of the midline, so they meet rather than pass.
     this.rails.right.configure({
+      gesture: "gather",
       axis: "x",
       from: +SWEEP_OUTER,
       to: +SWEEP_INNER,
@@ -581,6 +1101,7 @@ export class HandFollowCubeSystem extends createSystem({}) {
       arc: +SWEEP_ARC, // rises, then settles back to where it began
     });
     this.rails.left.configure({
+      gesture: "gather",
       axis: "x",
       from: -SWEEP_OUTER,
       to: -SWEEP_INNER,
@@ -603,12 +1124,14 @@ export class HandFollowCubeSystem extends createSystem({}) {
    */
   configureForExpand(): void {
     this.rails.right.configure({
+      gesture: "open",
       axis: "x",
       from: +EXPAND_INNER,
       to: +EXPAND_OUTER,
       cross: EXPAND_Y,
     });
     this.rails.left.configure({
+      gesture: "open",
       axis: "x",
       from: -EXPAND_INNER,
       to: -EXPAND_OUTER,
@@ -800,8 +1323,14 @@ export class HandFollowCubeSystem extends createSystem({}) {
       this.rails.right.untracked();
       this.hasPrevRightTip = false;
       this.smoothedRightSpeed = 0;
+      // Keep fading, or a "slowly" caught mid-show by a lost session would hang
+      // there at full opacity over whatever comes back.
+      this.rails.left.tick(delta);
+      this.rails.right.tick(delta);
       return;
     }
+
+    this.checkHandedness();
 
     // Each hand drives only its own rail, so a tracked left hand can never
     // move the right marker.
@@ -819,8 +1348,11 @@ export class HandFollowCubeSystem extends createSystem({}) {
       // the rails sit under a moved/rotated root, so compare in world.
       this.player.localToWorld(this.tip);
       if (side === "right") this.trackRightSpeed(delta);
-      this.rails[side].drive(this.tip, this.root);
+      this.rails[side].drive(this.tip, this.root, delta);
     }
+
+    this.rails.left.tick(delta);
+    this.rails.right.tick(delta);
 
     if (this.follow) this.followHead(delta);
   }
@@ -834,6 +1366,45 @@ export class HandFollowCubeSystem extends createSystem({}) {
     }
     this.prevRightTip.copy(this.tip);
     this.hasPrevRightTip = true;
+  }
+
+  /**
+   * Warn when an input source turns up without a handedness.
+   *
+   * findSource() matches "left"/"right" exactly, so a source reporting "none"
+   * drives NEITHER rail: that hand is completely dead, with no marker response
+   * of any kind. From inside the headset that is indistinguishable from the
+   * grab radius being too small — which is a tuning problem, and would send
+   * anyone debugging it to entirely the wrong constant.
+   *
+   * Latched, because this runs every frame. The latch CLEARS when the condition
+   * goes away, so a later episode logs again rather than being swallowed by a
+   * flag set once at startup.
+   */
+  private checkHandedness() {
+    const session = this.world.session;
+    if (!session) return;
+
+    let stray = 0;
+    for (const source of session.inputSources) {
+      if (source.handedness !== "left" && source.handedness !== "right") {
+        stray += 1;
+      }
+    }
+
+    if (stray > 0 && !this.warnedHandedness) {
+      this.warnedHandedness = true;
+      const seen = Array.from(session.inputSources)
+        .map((s) => `${s.handedness}${s.hand ? "(hand)" : "(ctrl)"}`)
+        .join(", ");
+      console.warn(
+        `[Rails] ${stray} input source(s) with no handedness — these drive ` +
+          `neither rail, so that hand will not respond at all. Sources: ${seen}`,
+      );
+    } else if (stray === 0 && this.warnedHandedness) {
+      this.warnedHandedness = false;
+      console.log("[Rails] handedness recovered on all input sources");
+    }
   }
 
   private findSource(side: Handedness): XRInputSource | null {

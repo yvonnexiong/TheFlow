@@ -18,6 +18,7 @@ import {
 import { GaussianSplatLoader, GaussianSplatLoaderSystem,} from "./gaussianSplatLoader.js";
 import { HandFollowCubeSystem } from "./handFollowCube.js";
 import { SplatMorphSystem } from "./splatMorph.js";
+import { SplatFlowSystem } from "./splatFlow.js";
 import { SplatRevealSystem } from "./splatReveal.js";
 import { DirectorSystem } from "./director.js";
 import { CosmosSystem } from "./cosmos.js";
@@ -122,6 +123,7 @@ World.create(document.getElementById("scene-container") as HTMLDivElement, {
       world
         .registerSystem(SplatRevealSystem)
         .registerSystem(SplatMorphSystem)
+        .registerSystem(SplatFlowSystem)
         .registerSystem(CosmosSystem)
         .registerSystem(DirectorSystem);
     } else if (SCENE_MODE === "reveal") {
